@@ -104,3 +104,53 @@ def test_failed_poll_records_outage_without_fake_observations(tmp_path, monkeypa
     assert collector.collect(tmp_path, "https://example.com", count=1) == 1
     report = collector.coverage(tmp_path)
     assert report["polls"] == 0 and len(report["errors"]) == 1
+
+
+def test_all_csv_parts_are_scanned_and_arrivals_use_end_time(tmp_path):
+    from zipfile import ZipFile
+
+    from bikeflow.trips import audit_archive
+
+    archive = tmp_path / "month.zip"
+    columns = (
+        "ride_id,rideable_type,started_at,ended_at,start_station_name,start_station_id,"
+        "end_station_name,end_station_id,start_lat,start_lng,end_lat,end_lng,member_casual\n"
+    )
+    trip = (
+        "r,classic_bike,2026-02-01 00:10:00,2026-02-01 00:40:00,Station,x,Station,x,"
+        "40.7,-74,40.7,-74,member\n"
+    )
+    missing = trip.replace("Station,x,Station,x", "Station,,Station,x")
+    with ZipFile(archive, "w") as z:
+        z.writestr("part1.csv", columns + trip)
+        z.writestr("part2.csv", columns + missing)
+        z.writestr("__MACOSX/._part1.csv", "ignored metadata")
+    station = {
+        "station_id": "uuid",
+        "short_name": "x",
+        "name": "Station",
+        "lat": 40.7,
+        "lon": -74,
+        "is_installed": 1,
+        "is_renting": 1,
+        "is_returning": 1,
+    }
+    snapshot = tmp_path / "snapshot.json.gz"
+    with gzip.open(snapshot, "wt") as f:
+        json.dump(
+            {
+                "poll_id": "test",
+                **{
+                    name: {"payload": {"data": {"stations": [station]}}}
+                    for name in ("station_information", "station_status")
+                },
+            },
+            f,
+        )
+    result = audit_archive(archive, snapshot, tmp_path / "data", tmp_path / "reports")
+    assert len(result["csv_parts"]) == 2 and result["counts"]["rows"] == 2
+    assert result["counts"]["missing_start_station_ids"] == 1
+    assert result["mapping_counts"] == {"matched": 1}
+    diagnostic = pd.read_csv(tmp_path / "data/processed/station_time_diagnostic.csv")
+    assert list(diagnostic.departures) == [1, 0]
+    assert list(diagnostic.arrivals) == [0, 2]

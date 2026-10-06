@@ -5,6 +5,11 @@ The submitted roadmap is in [PLAN.md](PLAN.md). This first implementation sessio
 builds the data foundation only: live station archiving, a full monthly trip audit,
 station identifier matching, and a diagnostic station-time table.
 
+See [the first-session report](reports/first-session/REPORT.md) for measured results:
+1,219,444 trips scanned across both February 2026 CSV parts, 2,130 verified active
+station matches, and three successful local live polls. The hosted collection
+workflow has also completed a successful real run.
+
 ## Setup
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then:

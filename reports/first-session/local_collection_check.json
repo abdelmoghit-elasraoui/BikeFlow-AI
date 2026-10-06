@@ -1,0 +1,11 @@
+{
+  "polls": 3,
+  "first_retrieval": "2026-10-06T11:48:36.175719+00:00",
+  "last_retrieval": "2026-10-06T11:50:36.140206+00:00",
+  "repeated_source_polls": 0,
+  "max_gap_seconds": 61.371339,
+  "gaps_over_10_minutes": 0,
+  "invalid_observations": 0,
+  "stale_observations": 274,
+  "errors": []
+}
