@@ -1,0 +1,35 @@
+name: Collect station snapshots
+on:
+  schedule:
+    - cron: '2-59/5 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: gbfs-collection
+  cancel-in-progress: false
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.16'
+      - run: uv sync --locked
+      - name: Collect public station feeds
+        run: uv run bikeflow collect --count 1
+      - name: Record collection health
+        if: always()
+        run: uv run bikeflow coverage > data/coverage.json
+      - name: Archive raw snapshots and health
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gbfs-${{ github.run_id }}
+          path: |
+            data/raw/gbfs/
+            data/coverage.json
+          retention-days: 7
+          if-no-files-found: error
