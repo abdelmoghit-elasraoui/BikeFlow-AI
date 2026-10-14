@@ -30,6 +30,33 @@ Complete these in order when implementation is authorized:
 
 First-session completion evidence: a working collector, a documented sample trip schema, a tested initial station mapping, and a list of unresolved data issues. Do not attempt to finish model training and the dashboard in this session.
 
+## Second working session
+
+First chunk of Sprint 1 data work. No model training beyond a historical-average
+baseline. Complete in order:
+
+1. Expanded trip history: download 3 months of trip ZIPs first, extend toward
+   the 12-month slice as disk and speed allow. Record filename, SHA-256, row
+   counts, and schema per file. Rescan each file with the existing audit
+   command; stop on any schema surprise before building targets.
+2. Normalized identifiers and timestamps: reuse the verified mapping (2,130
+   matched); flag the 71 unmatched and 9k missing IDs without guessing.
+   Store instants in UTC, derive weekday/hour and DST flags in
+   America/New_York, and verify conversion across one DST boundary.
+3. Parquet targets: write partitioned Parquet (`year=/month=/`), then
+   aggregate departures from `started_at` and arrivals from `ended_at` into
+   30-minute and 60-minute windows with explicit boundaries. Mark genuine
+   zero-trip windows apart from closed/missing data with an explicit
+   eligibility flag; never silent-zero-fill.
+4. Baseline v0: historical average by station, weekday, and time slot for
+   both horizons. Report MAE on a held-out final 2 weeks on the same rows
+   the later models will use.
+
+Second-session completion evidence: checksums plus row counts for added
+months, one station window table with an explicit missing-data flag, and a
+baseline MAE for both horizons. Weather join, PostgreSQL, and LightGBM stay
+in Sessions 3–4.
+
 ## Sprint 1 business logic and AI
 
 Teacher milestone: Session 6.
