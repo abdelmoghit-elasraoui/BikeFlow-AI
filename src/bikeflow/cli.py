@@ -23,6 +23,12 @@ def main():
     audit.add_argument("archive", type=Path)
     audit.add_argument("--snapshot", type=Path, required=True)
     audit.add_argument("--report-dir", type=Path, default=Path("reports"))
+    second = sub.add_parser("session2", help="Build 30/60-min targets and baseline v0")
+    second.add_argument("--months", nargs="+", default=["202512", "202601", "202602"])
+    second.add_argument(
+        "--mapping", type=Path, default=Path("reports/first-session/station_mapping.csv")
+    )
+    second.add_argument("--out", type=Path, default=Path("data/processed/session2"))
     args = parser.parse_args()
     if args.command == "collect":
         if args.count < 0 or args.interval < 1:
@@ -37,5 +43,15 @@ def main():
         print(
             json.dumps(
                 audit_archive(args.archive, args.snapshot, args.data_dir, args.report_dir), indent=2
+            )
+        )
+    if args.command == "session2":
+        from .session2 import run_session2
+
+        print(
+            json.dumps(
+                run_session2(args.data_dir / "raw" / "trips", args.mapping, args.out, args.months),
+                indent=2,
+                default=str,
             )
         )

@@ -16,6 +16,31 @@ Required work includes 12–24 months of historical trips, live GBFS archiving, 
 - Establish basic containerization and checks early; complete industrialization in Sprint 4.
 - Ask the teacher about the accepted from-scratch project exception early, without delaying read-only data investigation. This is a course eligibility question, separate from technical feasibility.
 
+## Teacher core requirements (mandatory constraints)
+
+All implementations must run smoothly on standard laptops. These override any
+local-only shortcut taken during early sessions:
+
+- Local AI focus: the core AI runs locally (lightweight tabular ML for
+  BikeFlow: pooled LightGBM arrival/departure models plus the
+  historical-average baseline). Paid, black-box third-party APIs are not
+  permitted for the main logic. Models must be evaluated on held-out test
+  data and exported as standalone artifacts (versioned model files with
+  dataset, parameters, and validation scores, not just notebook output).
+- Baseline deployment: reproducible containerization (Docker for API,
+  worker, database, and training/prediction jobs) and an automated CI/CD
+  pipeline (GitHub Actions) deploying to an accessible environment. The
+  workflows removed from GitHub during early local-only sessions must be
+  restored, at the latest, as part of the Sprint 4 industrialization
+  milestone — continuous collection and deployment cannot stay
+  laptop-dependent at final evaluation.
+- Standard application security: token-based authentication (JWT with
+  operator/admin roles), input validation on every endpoint, API rate
+  limits, and zero hardcoded secrets (environment-provided, never in Git).
+- Keep setups lightweight: prefer working, measurable implementations over
+  heavy local architectures. No Kubernetes, Kafka, or GPU-dependent models
+  unless measured results justify them.
+
 ## First working session
 
 Complete these in order when implementation is authorized:
