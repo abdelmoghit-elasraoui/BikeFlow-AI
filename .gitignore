@@ -7,6 +7,8 @@ __pycache__/
 .env.*
 !.env.example
 data/
+reports/first-session/
+.github/workflows/
 *.egg-info/
 dist/
 build/
