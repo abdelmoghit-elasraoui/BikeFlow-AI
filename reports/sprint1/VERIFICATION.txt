@@ -1,0 +1,263 @@
+BIKEFLOW AI - SPRINT 1 VERIFICATION PACK
+Last verified: 21 October 2026
+Repo: https://github.com/abdelmoghit-elasraoui/BikeFlow-AI (branch main, commit d179826)
+
+This file lists every command used to verify Sprint 1 and the expected output.
+Run from the repository root unless stated otherwise.
+
+Symbols: [MAC] = local Mac, [VPS] = Windows VPS (ssh bikeflow).
+
+=====================================================================
+1. ENVIRONMENT AND TESTS
+=====================================================================
+
+[MAC] Python + dependencies
+    uv sync --locked --extra dev
+    uv run python --version
+
+Expected: Python 3.12.x, all packages resolved from uv.lock.
+
+[MAC] Automated test suite (16 tests)
+    uv run pytest -q
+
+Expected:
+    ............  [100%]
+    16 passed
+
+[MAC] Lint and formatting
+    uv run ruff check src tests
+    uv run ruff format --check src tests
+
+Expected:
+    All checks passed!
+    11 files already formatted
+
+What the tests cover:
+- GBFS discovery for v2/v3 and localized payloads
+- Invalid counts, missing timestamps, closed stations
+- DST-ambiguous and nonexistent timestamps rejected
+- Station mapping: ambiguous, distant, renamed IDs
+- Raw snapshot preservation and repeated-source detection
+- Failure recording without fabricated observations
+- Full CSV scanning across multiple ZIP parts
+- Session 2: eligibility spans, 30/60 min nesting, no-leakage baseline
+- Sprint 1: calendar features, artifact export, model beats baseline,
+  API endpoints, predictions persisted before their target window
+
+=====================================================================
+2. DATA FOUNDATION (SESSIONS 1-2)
+=====================================================================
+
+[MAC] Trip archives present (3 months, ~1 GB)
+    ls -lh data/raw/trips/
+
+Expected: 202512, 202601, 202602 citibike ZIPs.
+
+[MAC] Targets manifest (checksums, row counts, limitations)
+    cat data/processed/session2/manifest.json
+
+Expected: 5,127,455 trips, 0 bad timestamps, 2,130 stations,
+test_start 2026-02-16.
+
+[MAC] Parquet targets
+    uv run python -c "
+    import pyarrow.parquet as pq
+    for name in ('targets_30min','targets_60min'):
+        d = pq.ParquetDataset(f'data/processed/session2/{name}')
+        n = sum(pq.read_metadata(f.path).num_rows for f in d.fragments)
+        print(name, n, 'rows', len(list(d.fragments)), 'files')
+    "
+
+Expected:
+    targets_30min 9150816 rows
+    targets_60min 4575408 rows
+
+[MAC] Baseline v0
+    cat data/processed/session2/baseline_v0.json
+
+Expected MAE on the final 14 days:
+    30 min: departures 0.485, arrivals 0.479
+    60 min: departures 0.821, arrivals 0.811
+
+=====================================================================
+3. MODEL TRAINING AND COMPARISON
+=====================================================================
+
+[MAC] Retrain from scratch (~2.5 minutes)
+    uv run bikeflow train --version v1
+
+Expected progress log with UTC timestamp and elapsed seconds, ending:
+    30min departures: MAE model 0.412 vs baseline 0.478
+    30min arrivals:   MAE model 0.408 vs baseline 0.472
+    60min departures: MAE model 0.746 vs baseline 0.811
+    60min arrivals:   MAE model 0.740 vs baseline 0.801
+
+[MAC] Artifacts
+    ls -lh data/models/v1/
+
+Expected: 4 model .txt files, metadata.json, metrics.json.
+
+[MAC] Comparison table
+    uv run python -c "
+    import json
+    m = json.load(open('data/models/v1/metrics.json'))
+    for h, hv in m['horizons'].items():
+        for f, r in hv['flows'].items():
+            print(f\"{h:6s} {f:10s} model {r['model_mae']:.3f} | baseline {r['baseline_mae']:.3f} | {r['improvement_pct']:+.1f}% | busy50 {r['busy50_model_mae']:.2f} vs {r['busy50_baseline_mae']:.2f}\")
+    "
+
+Expected:
+    30min departures model 0.412 | baseline 0.478 | +13.8% | busy50 1.81 vs 1.93
+    30min arrivals   model 0.408 | baseline 0.472 | +13.4% | busy50 1.80 vs 1.89
+    60min departures model 0.746 | baseline 0.811 | +8.0%  | busy50 3.29 vs 3.42
+    60min arrivals   model 0.740 | baseline 0.801 | +7.5%  | busy50 3.28 vs 3.36
+
+Committed evidence: reports/sprint1/REPORT.md and
+reports/sprint1/model_vs_baseline.json.
+
+=====================================================================
+4. VPS COLLECTION (24/7)
+=====================================================================
+
+[VPS] Collector task state
+    schtasks /query /tn BikeFlowCollector /fo LIST | findstr Status
+
+Expected: Status: Running
+
+[VPS] Coverage
+    cd /d C:\BikeFlow
+    .venv\Scripts\bikeflow.exe --data-dir C:\BikeFlow\data coverage
+
+Expected (verified 21 Oct 09:43 UTC):
+    polls: 4078
+    last_retrieval: 2026-10-21T09:43:32Z
+    max_gap_seconds: 189288 (the single documented pre-task gap)
+    gaps_over_10_minutes: 1
+    errors: only the two historical SSL entries from before the clock fix
+
+[VPS] Live log tail
+    powershell -Command "Get-Content C:\BikeFlow\data\collect.log -Tail 3"
+
+Expected: one JSON line per minute with stations ~2519, invalid 0,
+raw_path under C:\BikeFlow\data\raw\gbfs\.
+
+[VPS] Raw snapshot count and size
+    powershell -Command "(Get-ChildItem C:\BikeFlow\data\raw\gbfs -Recurse -Filter *.json.gz | Measure-Object).Count"
+
+Expected: ~4078 files, ~0.8 GB.
+
+=====================================================================
+5. API (FASTAPI ON THE VPS, REACHED VIA SSH TUNNEL)
+=====================================================================
+
+[MAC] Open the tunnel (keep the terminal open)
+    ssh -f -N -L 8000:127.0.0.1:8000 bikeflow
+    lsof -nP -iTCP:8000 -sTCP:LISTEN
+
+Expected: ssh process listening on 127.0.0.1:8000.
+
+[MAC] 5.1 Health
+    curl -s localhost:8000/health | python3 -m json.tool
+
+Expected:
+    status ok, model_version v1, 64-character dataset_hash,
+    has_snapshot true.
+
+[MAC] 5.2 Freshness (proves live collection, not stale data)
+    curl -s localhost:8000/freshness | python3 -m json.tool
+
+Expected: age_seconds under ~120, stale false, stations 2519.
+
+[MAC] 5.3 Stations
+    curl -s "localhost:8000/stations?eligible_only=true" | python3 -c "
+    import json,sys; d=json.load(sys.stdin)
+    print('count', d['count'], 'snapshot', d['snapshot']['poll_id'])
+    print(d['stations'][0])
+    "
+
+Expected: count ~2447, first station with bikes, docks, disabled,
+last_reported.
+
+[MAC] 5.4 One forecast at both horizons
+    curl -s "localhost:8000/forecasts/1869743938848725856?horizon=30" | python3 -m json.tool
+    curl -s "localhost:8000/forecasts/1869743938848725856?horizon=60" | python3 -m json.tool
+
+Expected: different forecast_departures/arrivals per horizon, current
+bikes/docks, expected state, warning_score, recommendation, model_version,
+snapshot_poll_id, snapshot_stale false.
+
+[MAC] 5.5 Ranked queue
+    curl -s "localhost:8000/queue?horizon=30&limit=5" | python3 -c "
+    import json,sys; q=json.load(sys.stdin)
+    for r in q['queue']:
+        print(r['station_id'][:12], r['recommendation'], round(r['warning_score'],2), 'bikes', r['current_bikes'], 'docks', r['current_docks'])
+    "
+
+Expected: ranked list; add_bikes only where docks exist, remove_bikes
+only where bikes exist, unavailable stations excluded.
+
+[MAC] 5.6 Prediction log (saved before the target interval)
+    curl -s "localhost:8000/predictions?limit=3" | python3 -m json.tool
+
+Expected: each row has issued_at earlier than target_window_utc, plus
+model_version and snapshot_poll_id.
+
+[MAC] 5.7 Interactive API documentation
+    open http://localhost:8000/docs
+
+Expected: all six endpoints listed: /health, /freshness, /stations,
+/forecasts/{station_id}, /queue, /predictions.
+
+[VPS] API task state
+    schtasks /query /tn BikeFlowAPI /fo LIST | findstr Status
+
+Expected: Status: Running
+
+=====================================================================
+6. SECURITY AND HYGIENE
+=====================================================================
+
+- No hardcoded secrets in the repository.
+- API bound to 127.0.0.1 on the VPS; reachable only through the SSH tunnel.
+- SSH key authentication enabled; password login no longer required.
+- Raw data, SQLite databases, environments, and model binaries excluded
+  from Git (data/, .venv/ in .gitignore).
+- Stale snapshots are flagged (snapshot_stale, /freshness) instead of
+  being silently served.
+- Predictions are recorded before their target window with model version
+  and snapshot provenance.
+
+[MAC] Confirm nothing sensitive is tracked
+    git ls-files | grep -E "\.env$|\.sqlite$|data/|\.venv" || echo "clean"
+
+Expected: clean
+
+=====================================================================
+7. KNOWN LIMITATIONS (state these honestly)
+=====================================================================
+
+- Training/test period is Dec-Feb (winter only); summer behaviour unseen.
+- Weather and explicit holiday features are not implemented yet.
+- Capacity and station lifecycle are approximated by the first/last
+  observed trip day (documented in docs/eligibility.md).
+- 12-month expansion, PostgreSQL, and the Poisson baseline remain open
+  for Sprint 2.
+- The warning score is a transparent priority score, not a calibrated
+  probability.
+- The API is not publicly deployed; it is accessed through an SSH tunnel.
+  Docker + CI/CD deployment is Sprint 4 work per the teacher requirements.
+
+=====================================================================
+8. QUICK DEMO ORDER FOR THE PROFESSOR (about 3 minutes)
+=====================================================================
+
+1. uv run pytest -q                                -> 16 passed
+2. cat data/models/v1/metrics.json                 -> model beats baseline
+3. ssh -f -N -L 8000:127.0.0.1:8000 bikeflow       -> tunnel
+4. curl -s localhost:8000/freshness                -> seconds old, not stale
+5. curl -s "localhost:8000/queue?horizon=30"       -> ranked recommendations
+6. curl -s ".../forecasts/1869743938848725856?horizon=30" and horizon=60
+7. curl -s "localhost:8000/predictions?limit=3"    -> issued before target
+8. open http://localhost:8000/docs                 -> all endpoints
+9. ssh bikeflow "schtasks /query /tn BikeFlowCollector /fo LIST | findstr Status"
+   -> Running (continuous collection)
