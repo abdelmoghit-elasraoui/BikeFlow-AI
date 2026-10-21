@@ -13,7 +13,6 @@ import sqlite3
 import threading
 import time
 from contextlib import closing
-from datetime import timedelta
 from pathlib import Path
 
 import lightgbm as lgb
@@ -117,7 +116,8 @@ def create_app(models_dir, data_dir):
     def score_batch(station_ids, horizon, snapshot, stations):
         """Batch-predict and persist. Returns one dict per station id."""
         now = pd.Timestamp.now(tz="UTC")
-        target = now.ceil(f"{horizon}min") + timedelta(minutes=horizon)
+        # Next full window boundary: 11:02 -> 11:30 for 30 min, 12:00 for 60 min.
+        target = now.ceil(f"{horizon}min")
         frame = pd.DataFrame(
             {
                 "station_id": station_ids,
@@ -136,8 +136,9 @@ def create_app(models_dir, data_dir):
             pd.Timestamp.now(tz="UTC") - pd.Timestamp(snapshot["retrieved_at"])
         ).total_seconds() > 600
         for i, station_id in enumerate(station_ids):
-            dep = float(predictions["departures"][i])
-            arr = float(predictions["arrivals"][i])
+            # Trips cannot be negative; regression can emit small negatives.
+            dep = max(0.0, float(predictions["departures"][i]))
+            arr = max(0.0, float(predictions["arrivals"][i]))
             state = stations.get(station_id, {})
             bikes = state.get("num_bikes_available", 0)
             docks = state.get("num_docks_available", 0)
@@ -204,6 +205,8 @@ def create_app(models_dir, data_dir):
         snapshot, stations = latest_snapshot(db_path, cache)
         if snapshot is None:
             raise HTTPException(503, "No collected snapshots available")
+        if station_id not in stations:
+            raise HTTPException(404, "Unknown station id. Get valid ids from /stations.")
         return score_batch([station_id], horizon, snapshot, stations)[0]
 
     @app.get("/health")
