@@ -79,8 +79,8 @@ baseline. Complete in order:
 
 Second-session completion evidence: checksums plus row counts for added
 months, one station window table with an explicit missing-data flag, and a
-baseline MAE for both horizons. Weather join, PostgreSQL, and LightGBM stay
-in Sessions 3–4.
+baseline MAE for both horizons. LightGBM was added in Sprint 1; the weather
+join and PostgreSQL were re-scoped to Sprint 2 (see the scope update above).
 
 ## Sprint 1 business logic and AI
 
@@ -88,13 +88,20 @@ Teacher milestone: Session 6.
 
 ### Data foundation
 
-- Download an initial 12-month slice of trip data; extend toward 24 months where useful and practical. Track source files, checksums, schema versions, and ingestion results.
-- Normalize station identifiers and timestamps. Store instants in UTC and derive time/calendar features in America/New_York, including daylight-saving transitions.
-- Store bulk trips and derived training tables as partitioned Parquet. Use PostgreSQL for station metadata, operational snapshots, predictions, and evaluation records, with an explicit retention strategy.
-- Aggregate departures by start station/time and arrivals by end station/time. Build both 30-minute and 60-minute targets with explicit window boundaries.
-- Distinguish genuine zero-trip windows from unavailable data or stations that were not operating. Document the eligibility rules.
-- Join station, calendar, and weather features. Cache weather requests. For retrospective forecast features, choose archived runs available at prediction time; do not leak later observations into earlier forecasts.
-- Separate long-history trip features from live-history features. Train a historical model using features available at inference. Add live state/history inputs in a later model once matching archived training examples exist.
+Scope update, 21 October 2026: Sprint 1 delivered the working vertical slice on
+three months of trips (Dec 2025-Feb 2026). The 12-month extension, PostgreSQL,
+and the weather join were moved to Sprint 2 to prioritise a complete, measured
+pipeline. This is a recorded scope change, not an omission; the deliverables
+and the reason are listed under "Sprint 1 scope change" near the end of this
+document.
+
+- Download an initial 12-month slice of trip data; extend toward 24 months where useful and practical. Track source files, checksums, schema versions, and ingestion results. **Sprint 2** (Sprint 1 used three months).
+- Normalize station identifiers and timestamps. Store instants in UTC and derive time/calendar features in America/New_York, including daylight-saving transitions. **Done in Sprint 1.**
+- Store bulk trips and derived training tables as partitioned Parquet. **Done in Sprint 1.** Use PostgreSQL for station metadata, operational snapshots, predictions, and evaluation records, with an explicit retention strategy. **Sprint 2.**
+- Aggregate departures by start station/time and arrivals by end station/time. Build both 30-minute and 60-minute targets with explicit window boundaries. **Done in Sprint 1.**
+- Distinguish genuine zero-trip windows from unavailable data or stations that were not operating. Document the eligibility rules. **Done in Sprint 1.**
+- Join station, calendar, and weather features. Cache weather requests. For retrospective forecast features, choose archived runs available at prediction time; do not leak later observations into earlier forecasts. **Sprint 2.**
+- Separate long-history trip features from live-history features. Train a historical model using features available at inference. Add live state/history inputs in a later model once matching archived training examples exist. **Done in Sprint 1 (calendar-only features, documented).**
 
 ### Models and API
 
@@ -109,9 +116,38 @@ Teacher milestone: Session 6.
 
 Completion evidence: reproducible ingestion and training, baseline/model comparison for both horizons, working API responses, and predictions persisted before their target interval.
 
+### Sprint 1 scope change (21 October 2026)
+
+Delivered scope was the complete vertical slice: three months of trips,
+partitioned Parquet targets, eligibility rules, baseline v0, four pooled
+LightGBM models with a measured comparison, versioned artifacts, a FastAPI
+service, a ranked queue, and a persisted prediction log, plus 24/7 collection
+on the VPS.
+
+Moved to Sprint 2, with reasons:
+
+- 12-month trip extension — the pipeline is proven end to end on three months;
+  extending is download time and compute, not new capability, and it was
+  deprioritised against finishing serving and evaluation.
+- PostgreSQL — SQLite has a single writer and supports the current prototype;
+  replacing it without concurrent multi-service access would add work without
+  changing behaviour.
+- Weather join — adding it on three winter months would not be measurable; it
+  becomes useful with the longer history in Sprint 2.
+
+The Poisson/regression second baseline remains conditional, as originally
+written: it is added only if it informs the comparison.
+
+This change is recorded here so the sprint boundary is explicit rather than
+implied.
+
 ## Sprint 2 integration and frontend
 
 Teacher milestone: Session 7.
+
+Carried from Sprint 1 (recorded scope change): extend trips to 12 months,
+introduce PostgreSQL for metadata/snapshots/predictions/evaluations with a
+retention rule, and add the weather join with cached, no-leakage forecast runs.
 
 - Build a React dashboard with a station map and normal/warning/critical states.
 - Show current available bikes/docks, 30-minute and 60-minute forecasts, and ranked recommendations with suggested quantities.
