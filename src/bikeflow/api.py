@@ -3,11 +3,16 @@
 Predictions are persisted before their target interval with the model version
 and the raw snapshot poll id that supplied live state. Local-only, read-only
 against the collector database.
+
+Each request opens its own SQLite connection: the collector writes every minute
+and sharing one connection across FastAPI's worker threads caused read hangs.
 """
 
 import json
 import sqlite3
 import threading
+import time
+from contextlib import closing
 from datetime import timedelta
 from pathlib import Path
 
@@ -20,6 +25,7 @@ from .model import feature_columns
 
 _state_lock = threading.Lock()
 LOW_WATER = 3.0
+SNAPSHOT_CACHE_SECONDS = 30
 
 
 def connect(path):
@@ -42,20 +48,35 @@ def connect(path):
     return db
 
 
-def latest_snapshot(db):
-    row = db.execute(
-        "SELECT id, retrieved_at FROM polls ORDER BY retrieved_at DESC LIMIT 1"
-    ).fetchone()
-    if not row:
-        return None, None
-    poll_id, retrieved = row
-    stations = {
-        r[0]: json.loads(r[1])
-        for r in db.execute(
-            "SELECT station_id, payload FROM observations WHERE poll_id = ?", (poll_id,)
-        )
-    }
+def _read_latest(db_path):
+    with closing(sqlite3.connect(db_path, timeout=10)) as db:
+        row = db.execute(
+            "SELECT id, retrieved_at FROM polls ORDER BY retrieved_at DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return None, None
+        poll_id, retrieved = row
+        stations = {
+            r[0]: json.loads(r[1])
+            for r in db.execute(
+                "SELECT station_id, payload FROM observations WHERE poll_id = ?", (poll_id,)
+            )
+        }
     return {"poll_id": poll_id, "retrieved_at": retrieved}, stations
+
+
+def latest_snapshot(db_path, cache=None):
+    """Read the newest snapshot, cached for a short window to skip re-parsing."""
+    if cache is None:
+        return _read_latest(db_path)
+    with _state_lock:
+        if cache.get("snapshot") and time.time() - cache.get("at", 0) < SNAPSHOT_CACHE_SECONDS:
+            return cache["snapshot"], cache["stations"]
+    snapshot, stations = _read_latest(db_path)
+    if snapshot:
+        with _state_lock:
+            cache.update(snapshot=snapshot, stations=stations, at=time.time())
+    return snapshot, stations
 
 
 def load_models(models_dir):
@@ -89,7 +110,9 @@ def create_app(models_dir, data_dir):
     station_codes = metadata.get("station_codes", {})
     unknown_code = len(station_codes)
     db_path = data_dir / "observations.sqlite"
-    db = connect(db_path)
+    with closing(connect(db_path)):
+        pass  # create the predictions table if absent
+    cache = {}
 
     def score_batch(station_ids, horizon, snapshot, stations):
         """Batch-predict and persist. Returns one dict per station id."""
@@ -167,7 +190,7 @@ def create_app(models_dir, data_dir):
                     "recommendation": recommendation,
                 }
             )
-        with _state_lock:
+        with _state_lock, closing(sqlite3.connect(db_path, timeout=10)) as db:
             db.executemany(
                 "INSERT INTO predictions (issued_at,target_window_utc,horizon_min,station_id,"
                 "model_version,snapshot_poll_id,departures,arrivals,warning_score,recommendation) "
@@ -178,14 +201,14 @@ def create_app(models_dir, data_dir):
         return results
 
     def issue_forecast(station_id, horizon):
-        snapshot, stations = latest_snapshot(db)
+        snapshot, stations = latest_snapshot(db_path, cache)
         if snapshot is None:
             raise HTTPException(503, "No collected snapshots available")
         return score_batch([station_id], horizon, snapshot, stations)[0]
 
     @app.get("/health")
     def health():
-        snapshot, _ = latest_snapshot(db)
+        snapshot, _ = latest_snapshot(db_path, cache)
         return {
             "status": "ok" if snapshot else "degraded",
             "model_version": metadata["version"],
@@ -195,7 +218,7 @@ def create_app(models_dir, data_dir):
 
     @app.get("/freshness")
     def freshness():
-        snapshot, stations = latest_snapshot(db)
+        snapshot, stations = latest_snapshot(db_path, cache)
         if snapshot is None:
             raise HTTPException(503, "No snapshots")
         age = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(snapshot["retrieved_at"])).total_seconds()
@@ -203,7 +226,7 @@ def create_app(models_dir, data_dir):
 
     @app.get("/stations")
     def stations(eligible_only: bool = True):
-        snapshot, rows = latest_snapshot(db)
+        snapshot, rows = latest_snapshot(db_path, cache)
         if snapshot is None:
             raise HTTPException(503, "No snapshots")
         result = []
@@ -232,7 +255,7 @@ def create_app(models_dir, data_dir):
     @app.get("/queue")
     def queue(horizon: int = Query(30, ge=30, le=60), limit: int = Query(20, ge=1, le=100)):
         horizon = 30 if horizon < 45 else 60
-        snapshot, rows = latest_snapshot(db)
+        snapshot, rows = latest_snapshot(db_path, cache)
         if snapshot is None:
             raise HTTPException(503, "No snapshots")
         candidates = [
@@ -249,12 +272,13 @@ def create_app(models_dir, data_dir):
 
     @app.get("/predictions")
     def predictions(limit: int = Query(20, ge=1, le=200)):
-        rows = db.execute(
-            "SELECT issued_at,target_window_utc,horizon_min,station_id,model_version,"
-            "snapshot_poll_id,departures,arrivals,warning_score,recommendation "
-            "FROM predictions ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        with closing(sqlite3.connect(db_path, timeout=10)) as db:
+            rows = db.execute(
+                "SELECT issued_at,target_window_utc,horizon_min,station_id,model_version,"
+                "snapshot_poll_id,departures,arrivals,warning_score,recommendation "
+                "FROM predictions ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
         columns = [
             "issued_at",
             "target_window_utc",
