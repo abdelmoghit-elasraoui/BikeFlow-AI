@@ -54,6 +54,13 @@ Every forecast call writes a row to the `predictions` table before the target
 window, with issue time, target window, horizon, station, model version,
 snapshot poll id, flows, score, and recommendation.
 
+## Duplicate ride check
+
+All 5,127,455 ride IDs across the three monthly archives are unique; scanning
+the boundary months produced 0 duplicate IDs and 0 extra rows. No dedup filter
+was needed for this slice. The check must be repeated when months are added,
+since only the month boundaries can overlap.
+
 ## Limitations
 
 - Test window is winter only; summer demand and peak magnitudes are unseen.
