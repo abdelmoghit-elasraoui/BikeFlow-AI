@@ -29,6 +29,20 @@ def main():
         "--mapping", type=Path, default=Path("reports/first-session/station_mapping.csv")
     )
     second.add_argument("--out", type=Path, default=Path("data/processed/session2"))
+    train = sub.add_parser("train", help="Train pooled LightGBM models and compare to baseline")
+    train.add_argument("--version", default="v1")
+    train.add_argument("--targets", type=Path, default=Path("data/processed/session2"))
+    train.add_argument("--models", type=Path, default=Path("data/models"))
+    train.add_argument(
+        "--mapping",
+        type=Path,
+        default=Path("reports/first-session/station_mapping.csv"),
+    )
+    serve = sub.add_parser("serve", help="Serve forecasts and the ranked queue")
+    serve.add_argument("--version", default="v1")
+    serve.add_argument("--models", type=Path, default=Path("data/models"))
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
     if args.command == "collect":
         if args.count < 0 or args.interval < 1:
@@ -54,4 +68,24 @@ def main():
                 indent=2,
                 default=str,
             )
+        )
+    if args.command == "train":
+        from .model import run_training
+
+        print(
+            json.dumps(
+                run_training(args.targets, args.models, args.version, args.mapping),
+                indent=2,
+                default=str,
+            )
+        )
+    if args.command == "serve":
+        import uvicorn
+
+        from .api import create_app
+
+        uvicorn.run(
+            create_app(args.models / args.version, args.data_dir),
+            host=args.host,
+            port=args.port,
         )

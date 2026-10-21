@@ -18,7 +18,7 @@ are excluded entirely. Real operating history refines this in later sessions.
 import hashlib
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -247,7 +247,7 @@ def write_month_partition(events_dep, events_arr, spans, year, month, horizon, o
 
 def split_day(global_max_day):
     """First date of the held-out final 14-day test period."""
-    return (pd.Timestamp(global_max_day) - pd.Timedelta(days=TEST_DAYS - 1)).date().isoformat()
+    return (pd.Timestamp(global_max_day) - timedelta(days=TEST_DAYS - 1)).date().isoformat()
 
 
 def _span_days(spans, start_bound=None, end_bound=None):
@@ -315,7 +315,7 @@ def train_key_means(events, spans, test_start, horizon):
             )
     log(f"Baseline-train {horizon}min: counting eligible windows per key")
     days = _span_days(
-        spans, end_bound=(pd.Timestamp(test_start) - pd.Timedelta(days=1)).date().isoformat()
+        spans, end_bound=(pd.Timestamp(test_start) - timedelta(days=1)).date().isoformat()
     )
     day_counts = (
         days.assign(weekday=days.day.dt.weekday.astype("int16"))

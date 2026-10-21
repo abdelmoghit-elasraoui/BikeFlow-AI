@@ -1,0 +1,66 @@
+{
+  "generated_at": "2026-10-21T08:46:36.799571+00:00",
+  "version": "v1",
+  "horizons": {
+    "30min": {
+      "val_start": "2026-02-02",
+      "test_start": "2026-02-16",
+      "flows": {
+        "departures": {
+          "model_mae": 0.41191733036013706,
+          "baseline_mae": 0.47800141616598746,
+          "improvement_pct": 13.825081594089358,
+          "busy50_model_mae": 1.809355980218801,
+          "busy50_baseline_mae": 1.9338152296605018,
+          "test_windows": 1396464,
+          "best_iteration": 74,
+          "station_categories": 2117,
+          "unknown_station_code": 2117,
+          "model_file": "30min_departures.txt"
+        },
+        "arrivals": {
+          "model_mae": 0.4083968920286345,
+          "baseline_mae": 0.471832534855051,
+          "improvement_pct": 13.444524940592368,
+          "busy50_model_mae": 1.7976664288649766,
+          "busy50_baseline_mae": 1.8936626291568985,
+          "test_windows": 1396464,
+          "best_iteration": 75,
+          "station_categories": 2117,
+          "unknown_station_code": 2117,
+          "model_file": "30min_arrivals.txt"
+        }
+      }
+    },
+    "60min": {
+      "val_start": "2026-02-02",
+      "test_start": "2026-02-16",
+      "flows": {
+        "departures": {
+          "model_mae": 0.7461609503755433,
+          "baseline_mae": 0.8106653339995554,
+          "improvement_pct": 7.956968297357525,
+          "busy50_model_mae": 3.293612546053069,
+          "busy50_baseline_mae": 3.419586263783972,
+          "test_windows": 698232,
+          "best_iteration": 72,
+          "station_categories": 2117,
+          "unknown_station_code": 2117,
+          "model_file": "60min_departures.txt"
+        },
+        "arrivals": {
+          "model_mae": 0.7404132854508794,
+          "baseline_mae": 0.8007336132045039,
+          "improvement_pct": 7.533132961937862,
+          "busy50_model_mae": 3.275680803314529,
+          "busy50_baseline_mae": 3.359859338369367,
+          "test_windows": 698232,
+          "best_iteration": 72,
+          "station_categories": 2117,
+          "unknown_station_code": 2117,
+          "model_file": "60min_arrivals.txt"
+        }
+      }
+    }
+  }
+}

@@ -111,6 +111,29 @@ the final 14 days for scoring. Outputs (local-only) land in
 `targets_60min/` (`year=/month=/`), `station_spans.csv`, `manifest.json`,
 and `baseline_v0.json` with MAE per horizon and flow.
 
+## Sprint 1: LightGBM models and local API
+
+```sh
+# Train 4 pooled models (30/60min x arrivals/departures) and compare to baseline v0:
+uv run bikeflow train --version v1
+
+# Serve forecasts, the ranked queue, and persisted predictions:
+uv run bikeflow serve --version v1 --port 8000
+```
+
+`train` writes `data/models/v1/`: one booster per horizon/flow, `metadata.json`
+(dataset hash, station codes, feature list, params) and `metrics.json` with
+model vs baseline MAE on the untouched final 14 days, including the 50 busiest
+stations. Features are calendar-only (station, NYC weekday/hour/slot, weekend,
+day-of-year) so train and serving see the same inputs; lag features wait for
+sufficient live snapshot history.
+
+The API reads the newest collected snapshot and writes every forecast to
+`predictions` in `data/observations.sqlite` before its target window, with the
+model version and snapshot poll id. Endpoints: `/health`, `/freshness`,
+`/stations`, `/forecasts/{station_id}?horizon=30|60`, `/queue`, `/predictions`.
+Stale snapshots are flagged rather than silently served.
+
 `trip_audit.json` and `station_mapping.csv` in your local `reports/first-session/`
 contain evidence (local-only, not pushed to GitHub).
 `data/processed/station_time_diagnostic.csv` contains observed 30-minute arrival

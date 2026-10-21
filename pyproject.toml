@@ -8,8 +8,12 @@ version = "0.1.0"
 description = "Data foundation for predictive bike-share rebalancing"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+    "fastapi>=0.156.7",
+    "lightgbm>=4.7.0",
     "pandas>=2.2,<3",
     "pyarrow>=26.0.0",
+    "scikit-learn>=1.9.1",
+    "uvicorn[standard]>=0.54.0",
 ]
 
 [project.optional-dependencies]
@@ -30,3 +34,8 @@ select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.16.0",
+]
