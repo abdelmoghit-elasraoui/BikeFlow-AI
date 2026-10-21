@@ -413,7 +413,96 @@ the proposal states.
 
 ---
 
-## 9. Glossary
+## 9. Services and tools explained
+
+### External services
+
+- **Citi Bike GBFS** (General Bikeshare Feed Specification) — public JSON feed.
+  Every minute it reports, per station: bikes available, docks available,
+  whether the station is installed/renting/returning, and when it last
+  reported. This is the only live data source.
+- **Citi Bike monthly trip archives** — ZIP files of historical rides hosted on
+  Amazon S3 (Simple Storage Service). Each row is a completed trip with start
+  and end times, station identifiers, and coordinates. This is the only
+  historical demand source.
+- **GitHub** — source control and code hosting. Holds source, tests, and docs.
+  It never holds raw data, databases, models, or secrets.
+- **The VPS** (Virtual Private Server) — a rented Windows machine in a data
+  centre that stays on. Runs collection and the API.
+
+### Python tools
+
+- **uv** — installs Python packages and runs commands inside the project
+  environment. `uv run` executes in `.venv` so versions match `uv.lock`.
+- **pandas** — table processing: reads CSV (Comma-Separated Values) and Parquet,
+  groups, joins, converts timestamps. Performs the actual data manipulation.
+- **pyarrow** — the engine behind Parquet and pandas. Reads and writes columnar
+  files efficiently.
+- **numpy** — fast numeric arrays used under pandas and LightGBM.
+- **LightGBM** (Light Gradient Boosting Machine) — gradient-boosted decision
+  trees. Trains the four forecast models. CPU-only; seconds per model at this
+  data size.
+- **scikit-learn** — required by LightGBM's scikit-learn wrapper; also provides
+  utilities used indirectly.
+- **FastAPI** — web framework. Defines endpoints (`/queue`, `/forecasts`),
+  validates query parameters, and generates interactive documentation at
+  `/docs`.
+- **uvicorn** — the web server that runs FastAPI and listens on port 8000.
+- **pytest** — test runner. Executes the 16 automated checks.
+- **ruff** — linter and formatter. Enforces style and catches unused imports.
+
+### Storage
+
+- **Raw `.json.gz` files** — the original GBFS payload per poll, compressed
+  with gzip. Immutable evidence: if parsing changes later, data can be
+  reprocessed without re-downloading.
+- **SQLite** (`observations.sqlite`) — a single-file relational database with no
+  server process. Tables:
+  - `polls` — one row per fetch (time, counts, hash, file path, TTL);
+  - `observations` — one row per station per poll (eligibility, issues, raw
+    payload);
+  - `errors` — failed fetches;
+  - `predictions` — every forecast served, with issue time, target time, and
+    model version.
+  Chosen because there is a single writer (the collector) and operations are
+  tiny. It will be replaced by PostgreSQL when multiple services need
+  concurrent access.
+- **Parquet** (`data/processed/session2/`) — compressed columnar files for
+  training. 9.2 million rows take about 3.3 MB because zeros compress
+  extremely well. Partitioned by `year=/month=/` so one month can be read
+  without loading everything.
+- **Model `.txt` files** — LightGBM's native model format. Four boosters plus
+  `metadata.json` (feature list, dataset hash, station mapping) and
+  `metrics.json` (measured error results).
+
+### Operating-system pieces on the VPS
+
+- **Task Scheduler** — runs `BikeFlowCollector` and `BikeFlowAPI` at startup,
+  restarts them on failure, and keeps them alive after RDP (Remote Desktop
+  Protocol) disconnects.
+- **OpenSSH Server** — lets the Mac open a remote shell and a port tunnel, using
+  key authentication instead of a password.
+- **PowerShell / cmd** — command shells used to create tasks, inspect logs, and
+  run commands.
+
+### Networking
+
+- **SSH** (Secure Shell) **tunnel** —
+  `ssh -L 8000:127.0.0.1:8000` forwards the Mac's `localhost:8000` to the VPS
+  loopback port. The API is never exposed to the public internet.
+- **HTTP** (Hypertext Transfer Protocol) and **JSON** (JavaScript Object
+  Notation) — the protocol and payload format between the collector and Citi
+  Bike, and between a browser and FastAPI.
+
+### Not used yet
+
+- PostgreSQL, Docker, GitHub Actions (CI/CD), MLflow, Airflow, React dashboards
+  — planned for Sprints 2 to 4.
+- No paid API, no GPU, no Kubernetes, no Kafka.
+
+---
+
+## 10. Glossary and abbreviations
 
 - **GBFS** — General Bikeshare Feed Specification; the public JSON standard for
   bike-share station state.
@@ -430,3 +519,31 @@ the proposal states.
   shortage, expected overflow, and activity. Not a probability.
 - **Artifact** — a trained model file plus its metadata, versioned so a
   prediction can always be traced to the exact model and dataset.
+
+### Abbreviations
+
+- **API** — Application Programming Interface; here, the HTTP endpoints that
+  return JSON.
+- **CI/CD** — Continuous Integration / Continuous Deployment; automated testing
+  and release pipelines.
+- **CSV** — Comma-Separated Values, a plain-text table format.
+- **DST** — Daylight Saving Time; clocks shift by one hour twice a year, which
+  creates ambiguous or nonexistent local timestamps.
+- **GBFS** — General Bikeshare Feed Specification, the public JSON standard for
+  bike-share station state.
+- **HTTP/HTTPS** — Hypertext Transfer Protocol (Secure), the web protocol.
+- **JSON** — JavaScript Object Notation, a text format for structured data.
+- **JWT** — JSON Web Token, a signed token used for authentication.
+- **MAE** — Mean Absolute Error, the average absolute difference between
+  predictions and observations, in trips per station per window.
+- **NYC** — New York City.
+- **RDP** — Remote Desktop Protocol, used to log into the Windows VPS.
+- **S3** — Amazon Simple Storage Service, object storage hosting the trip
+  archives.
+- **SSH** — Secure Shell, an encrypted remote login and tunnelling protocol.
+- **TTL** — Time To Live, how long a feed considers its data valid.
+- **UTC** — Coordinated Universal Time, the timezone used for all stored
+  instants.
+- **VPS** — Virtual Private Server, a rented always-on machine.
+- **ZIP** — a compressed archive file format; the monthly trip archives contain
+  CSV files inside a ZIP.
