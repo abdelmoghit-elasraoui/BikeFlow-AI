@@ -104,38 +104,159 @@ ignored. Models are transferred to the VPS with `scp`, not committed.
 
 ## 3. Data sources
 
-### Live data: GBFS
+### 3.1 Form of the live GBFS data
 
-Citi Bike publishes a General Bikeshare Feed Specification directory at
-`https://gbfs.citibikenyc.com/gbfs/gbfs.json`. The collector discovers feed URLs
-at runtime instead of hardcoding hosts, then reads two feeds:
+Everything arrives as **plain JSON over HTTPS**. There is no XML, no
+authentication, no API key, and no database. The data has three levels.
 
-- **station_information** — static-ish metadata: station id, name,
-  coordinates, dock capacity.
-- **station_status** — dynamic state: bikes available, docks available,
-  disabled assets, operational flags, per-station `last_reported` time.
+**Level 1 — discovery directory** (`gbfs.json`): a list of feed names and URLs.
 
-Each poll is stored three ways:
+```json
+{"data": {"en": {"feeds": [
+  {"name": "station_information", "url": "https://gbfs.lyft.com/gbfs/1.1/bkn/en/station_information.json"},
+  {"name": "station_status",      "url": "https://gbfs.lyft.com/gbfs/1.1/bkn/en/station_status.json"}
+]}}}
+```
+
+The collector reads this first and follows the URLs; hosts and versions are
+never hardcoded.
+
+**Level 2 — station information** (metadata, one object per station):
+
+```json
+{
+  "station_id": "66db408f-0aca-11e7-82f6-3863bb44ef7c",
+  "name": "Harrison St & Hudson St",
+  "short_name": "5400.05",
+  "lat": 40.71870987, "lon": -74.0090009,
+  "capacity": 39,
+  "region_id": "71",
+  "station_type": "classic",
+  "rental_methods": ["KEY", "CREDITCARD"]
+}
+```
+
+**Level 3 — station status** (dynamic state, changes every ~60 seconds):
+
+```json
+{"last_updated": 1791967946, "ttl": 60, "version": "1.1",
+ "data": {"stations": [{
+   "station_id": "66db408f-0aca-11e7-82f6-3863bb44ef7c",
+   "num_bikes_available": 33,
+   "num_bikes_disabled": 3,
+   "num_docks_available": 3,
+   "num_docks_disabled": 0,
+   "is_installed": 1, "is_renting": 1, "is_returning": 1,
+   "last_reported": 1791967736,
+   "legacy_id": "249",
+   "num_ebikes_available": 8
+ }]}}
+```
+
+Format details that matter:
+
+- **Times are Unix epoch seconds** (integers), not ISO strings. They are
+  converted to ISO UTC when stored.
+- **Flags are 0/1 integers**, not booleans.
+- **`ttl: 60`** declares the feed valid for 60 seconds; the collector never
+  polls faster.
+- **`last_reported` is per station** and can lag `last_updated`. That lag is how
+  stale stations are detected.
+- A status payload holds about 2,519 stations and compresses to roughly 205 KB.
+
+### 3.2 Are the three feeds updated at the same time?
+
+No. They are three independent HTTP requests with three independent
+timestamps. In one stored bundle:
+
+| Feed | Retrieved at | Feed `last_updated` | Meaning |
+| --- | --- | --- | --- |
+| discovery | 08:53:33.207 | 1791968005 | Feed directory, changes rarely |
+| station_information | 08:53:34.181 | 1791967946 | Station metadata, changes rarely |
+| station_status | 08:53:34.978 | 1791967946 | Live state, every ~60s |
+
+Consequences:
+
+- The three fetches are **not atomic**. A station could be added or removed
+  between the information and status calls. The collector tolerates this: a
+  status row without metadata is flagged `missing_metadata` and excluded from
+  decisions, not dropped.
+- Each stored envelope keeps **its own retrieval time** (`retrieved_at`) and
+  **its own feed time** (`last_updated`), so the difference is auditable later.
+- Discovery and station information do not need 60-second polling in principle,
+  but fetching them together is cheap and guarantees the metadata matches the
+  status snapshot.
+
+### 3.3 How staleness is detected
+
+Three separate checks, all with explicit thresholds:
+
+1. **Feed-level**: if `now − last_updated > max(300 s, 3 × ttl)`, every station in
+   that poll is flagged `stale_feed`. A 60-second TTL therefore allows 3
+   minutes before the whole feed is considered stale.
+2. **Station-level**: if `now − last_reported > max(300 s, 3 × ttl)`, that station
+   is flagged `stale_station` and marked `eligible = 0`. It stays archived for
+   analysis but cannot drive a forecast or a recommendation.
+3. **Future timestamps**: a feed or station timestamp more than 60 seconds in
+   the future is flagged (`future_feed_timestamp`, `future_station_timestamp`),
+   which catches clock errors on either side.
+
+The API repeats the freshness check rather than trusting the collector: every
+forecast response carries `snapshot_stale`, and `/freshness` reports
+`age_seconds`. A snapshot older than 10 minutes is never presented as current.
+The two historical SSL failures and the 47-hour VPS gap remain visible in the
+`errors` table and `coverage` output — the system records outages instead of
+hiding them.
+
+### 3.4 The historical data: where it comes from and what is in it
+
+Source: Citi Bike publishes one ZIP per month at
+`https://s3.amazonaws.com/tripdata/YYYYMM-citibike-tripdata.zip`. Each ZIP holds
+one or more CSVs. The project currently uses **December 2025, January 2026, and
+February 2026**, totalling **5,127,455 trips** (about 1 GB compressed).
+
+Each row contains:
+
+| Field | Meaning |
+| --- | --- |
+| `ride_id` | Unique trip identifier |
+| `rideable_type` | classic bike, electric bike, scooter |
+| `started_at`, `ended_at` | Local New York time, no timezone |
+| `start_station_name`, `start_station_id` | Where the trip began |
+| `end_station_name`, `end_station_id` | Where it ended |
+| `start_lat`, `start_lng`, `end_lat`, `end_lng` | Coordinates |
+| `member_casual` | Subscription type |
+
+What is **missing or problematic**, and how the project handles it:
+
+| Gap | Consequence | Current handling |
+| --- | --- | --- |
+| **No rebalancing records** | Inventory change ≠ rider demand; staff move bikes invisibly | Evaluate flows against trips (unaffected), evaluate warning quality separately against snapshots; state that causal benefit is unproven |
+| **No station opening/closing dates** | Cannot know when a station truly operated | First/last observed trip day heuristic; windows outside are absent, never zero; documented in `docs/eligibility.md` |
+| **No capacity history** | Current capacity is not February capacity | Use current capacity with a staleness caveat; sensitivity checks planned; archived snapshots will build real capacity history over time |
+| **Missing station IDs** (1,119 start, 8,058 end in Feb) | Some trips cannot be attributed | Excluded from targets; counted and reported; never guessed from coordinates alone |
+| **Unmatched IDs** (71 stations) | Historical stations absent from live feed | Excluded from training; kept in the mapping report for review |
+| **Month boundary spillover** (trips dated outside the nominal month) | Double counting risk across months | Windows assigned by the trip's own timestamp; overlap dedup verified (0 duplicates in 5.1M) |
+| **Censored demand** | When a station is empty, unmet demand is invisible; trips that never happen are not recorded | Acknowledge as a limitation; evaluate forecasting accuracy, not true demand; classify warnings against observed empty/full events |
+| **No weather** | Rain/snow suppress demand | Planned Open-Meteo join using archived forecast runs available at prediction time |
+| **No holidays** | Holidays behave like weekends | `day_of_year` partially captures it; explicit calendar flags planned |
+| **Staff trips excluded** | Public data omits operator rides | No impact on rider demand targets; noted in the report |
+| **Timezones not provided** | Local times are ambiguous at DST transitions | Interpreted as `America/New_York`; ambiguous/nonexistent timestamps are excluded, not guessed |
+
+The general principle: **missing data is excluded and reported, never invented.**
+That is why the collector records failures, the targets leave gaps explicit, and
+the reports list every excluded category with counts.
+
+### 3.5 How each poll is stored
 
 1. **Raw** — the complete discovery + information + status JSON, gzipped, at
-   `data/raw/gbfs/YYYY/MM/DD/<poll_id>.json.gz`. Nothing is discarded, so a
-   parser bug can be fixed later without losing history.
-2. **Indexed** — SQLite `observations.sqlite` with three tables:
-   `polls` (one row per fetch), `observations` (one row per station per poll,
-   with an eligibility flag and an issues list), and `errors` (failed fetches).
+   `data/raw/gbfs/YYYY/MM/DD/<poll_id>.json.gz`. Nothing is flattened or
+   discarded, so a parser bug can be fixed later without losing history.
+2. **Indexed** — SQLite `observations.sqlite`: `polls` (one row per fetch),
+   `observations` (one row per station per poll, with an eligibility flag and
+   an issues list), `errors` (failed fetches), and later `predictions`.
 3. **Summarised** — `bikeflow coverage` prints polls, gaps, repeated-source
-   count, invalid/stale counts, and errors.
-
-### Historical data: monthly trips
-
-Citi Bike publishes monthly ZIPs where each ZIP contains one or more CSVs of
-individual trips: start/end times, station ids and names, coordinates, bike
-type, and user type. The project currently uses December 2025, January 2026,
-and February 2026: **5,127,455 trips**.
-
-Public trip data excludes staff servicing trips, and it does **not** record
-rebalancing operations. That matters for interpretation: inventory changes are
-not the same as rider demand.
+   count, invalid and stale counts, and errors.
 
 ---
 
