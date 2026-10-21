@@ -56,6 +56,48 @@ uv run bikeflow coverage --raw-root data/vps-mirror
 
 Do this weekly so a VPS loss costs a week, not the semester.
 
+## Local API over SSH tunnel
+
+One-time: install OpenSSH Server on the VPS and the Microsoft VC++ runtime
+(LightGBM needs `lib_lightgbm.dll` dependencies):
+
+```powershell
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+Start-Service sshd; Set-Service sshd -StartupType Automatic
+New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH Server' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22
+curl.exe -L -o C:\vc_redist.x64.exe https://aka.ms/vs/17/release/vc_redist.x64.exe
+C:\vc_redist.x64.exe /install /quiet /norestart
+```
+
+Admin accounts use `C:\ProgramData\ssh\administrators_authorized_keys` (not
+`~/.ssh/authorized_keys`); ACL it to Administrators + SYSTEM and restart sshd.
+
+Scheduled task `BikeFlowAPI` (OnStart, run-as Administrator) executes:
+
+```text
+cmd /c C:\BikeFlow\.venv\Scripts\bikeflow.exe --data-dir C:\BikeFlow\data serve
+      --version v1 --models C:\BikeFlow\data\models --host 127.0.0.1 --port 8000
+```
+
+Note `--data-dir` is a global flag and must come before `serve`.
+
+From the Mac:
+
+```sh
+ssh -f -N -L 8000:127.0.0.1:8000 bikeflow
+curl -s localhost:8000/freshness | python3 -m json.tool
+```
+
+Use `127.0.0.1` in the tunnel, not `localhost`: Windows resolves `localhost` to
+IPv6 while uvicorn binds IPv4, which produces an empty reply.
+
+Stopping/updating the API:
+
+```powershell
+schtasks /end /tn BikeFlowAPI
+schtasks /run /tn BikeFlowAPI
+```
+
 ## Known gotchas
 
 - PowerShell aliases `curl` to `Invoke-WebRequest`; use `curl.exe` for HTTP tests.
