@@ -8,6 +8,7 @@ Each request opens its own SQLite connection: the collector writes every minute
 and sharing one connection across FastAPI's worker threads caused read hangs.
 """
 
+import gzip
 import json
 import sqlite3
 import threading
@@ -48,20 +49,24 @@ def connect(path):
 
 
 def _read_latest(db_path):
+    db_path = Path(db_path)
     with closing(sqlite3.connect(db_path, timeout=10)) as db:
         row = db.execute(
-            "SELECT id, retrieved_at FROM polls ORDER BY retrieved_at DESC LIMIT 1"
+            "SELECT id, retrieved_at, raw_path FROM polls ORDER BY retrieved_at DESC LIMIT 1"
         ).fetchone()
-        if not row:
-            return None, None
-        poll_id, retrieved = row
-        stations = {
-            r[0]: json.loads(r[1])
-            for r in db.execute(
-                "SELECT station_id, payload FROM observations WHERE poll_id = ?", (poll_id,)
-            )
-        }
-    return {"poll_id": poll_id, "retrieved_at": retrieved}, stations
+    if not row:
+        return None, None
+    poll_id, retrieved, raw_path = row
+    path = Path(str(raw_path).replace("\\", "/"))
+    if not path.is_absolute():
+        path = db_path.parent / path
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as stream:
+            bundle = json.load(stream)
+    except FileNotFoundError:
+        return None, None
+    rows = bundle["station_status"]["payload"]["data"]["stations"]
+    return {"poll_id": poll_id, "retrieved_at": retrieved}, {row["station_id"]: row for row in rows}
 
 
 def latest_snapshot(db_path, cache=None):

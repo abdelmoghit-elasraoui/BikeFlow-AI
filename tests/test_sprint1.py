@@ -1,5 +1,6 @@
 """Sprint 1 checks: model training, leakage-free comparison, API + prediction logging."""
 
+import gzip
 import json
 from datetime import timedelta
 
@@ -98,14 +99,34 @@ def test_api_serves_forecasts_and_persists_predictions(tiny_dataset, tmp_path):
         "is_returning": 1,
         "last_reported": int(now.timestamp()),
     }
+    raw_dir = data_dir / "raw" / "gbfs" / "2026" / "01" / "01"
+    raw_dir.mkdir(parents=True)
+    raw = raw_dir / "poll1.json.gz"
+    with gzip.open(raw, "wt", encoding="utf-8") as stream:
+        json.dump(
+            {
+                "poll_id": "poll1",
+                "station_status": {"payload": {"data": {"stations": [station]}}},
+            },
+            stream,
+        )
     db.execute(
-        "INSERT INTO polls (id,retrieved_at,source_updated,status_hash,repeated_source,raw_path,"
-        "station_count,invalid_count,stale_count,ttl) VALUES (?,?,?,?,?,?,?,?,?,?)",
-        ("poll1", now.isoformat(), str(int(now.timestamp())), "hash", 0, "raw.gz", 1, 0, 0, 60),
-    )
-    db.execute(
-        "INSERT INTO observations VALUES (?,?,?,?,?,?)",
-        ("poll1", "a", str(int(now.timestamp())), 1, "[]", json.dumps(station)),
+        "INSERT INTO polls (id,retrieved_at,source_updated,status_hash,repeated_source,"
+        "raw_path,station_count,invalid_count,stale_count,ttl,eligible_count) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "poll1",
+            now.isoformat(),
+            str(int(now.timestamp())),
+            "hash",
+            0,
+            str(raw.relative_to(data_dir)),
+            1,
+            0,
+            0,
+            60,
+            1,
+        ),
     )
     db.commit()
     db.close()

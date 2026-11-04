@@ -23,17 +23,19 @@ def connect(root):
             id TEXT PRIMARY KEY, retrieved_at TEXT NOT NULL,
             source_updated TEXT, status_hash TEXT, repeated_source INTEGER,
             raw_path TEXT, station_count INTEGER, invalid_count INTEGER,
-            stale_count INTEGER, ttl INTEGER
-        );
-        CREATE TABLE IF NOT EXISTS observations (
-            poll_id TEXT NOT NULL, station_id TEXT NOT NULL,
-            last_reported TEXT, eligible INTEGER NOT NULL, issues TEXT NOT NULL,
-            payload TEXT NOT NULL, PRIMARY KEY(poll_id, station_id)
+            stale_count INTEGER, ttl INTEGER, eligible_count INTEGER
         );
         CREATE TABLE IF NOT EXISTS errors (
             retrieved_at TEXT NOT NULL, message TEXT NOT NULL
         );
     """)
+    columns = {row[1] for row in db.execute("PRAGMA table_info(polls)")}
+    if "eligible_count" not in columns:
+        db.execute("ALTER TABLE polls ADD COLUMN eligible_count INTEGER")
+    # Station state lives only in the raw snapshots. Earlier versions duplicated
+    # every station's JSON payload here, producing multi-GB databases.
+    db.execute("DROP TABLE IF EXISTS observations")
+    db.commit()
     return db
 
 
@@ -68,8 +70,8 @@ def collect_once(root, discovery_url):
     # A failed database write still leaves original payloads for recovery.
     with gzip.open(target, "wt", encoding="utf-8") as stream:
         json.dump(bundle, stream, separators=(",", ":"))
-    observations = []
     invalid = stale = 0
+    eligible_count = 0
     for row in rows:
         issues = validate_status(row)
         invalid += bool(issues)
@@ -89,24 +91,15 @@ def collect_once(root, discovery_url):
         elif source_time - now.timestamp() > 60:
             issues.append("future_feed_timestamp")
         active = all(row.get(k) for k in ("is_installed", "is_renting", "is_returning"))
-        eligible = active and not issues
-        observations.append(
-            (
-                poll_id,
-                row["station_id"],
-                str(row.get("last_reported")),
-                int(eligible),
-                json.dumps(issues),
-                json.dumps(row),
-            )
-        )
+        if active and not issues:
+            eligible_count += 1
     with closing(connect(root)) as db, db:
         previous = db.execute(
             "SELECT status_hash FROM polls ORDER BY retrieved_at DESC LIMIT 1"
         ).fetchone()
         repeated = bool(previous and previous[0] == fingerprint)
         db.execute(
-            "INSERT INTO polls VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO polls VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 poll_id,
                 status["retrieved_at"],
@@ -118,15 +111,15 @@ def collect_once(root, discovery_url):
                 invalid,
                 stale,
                 ttl,
+                eligible_count,
             ),
         )
-        db.executemany("INSERT INTO observations VALUES (?,?,?,?,?,?)", observations)
     return {
         "poll_id": poll_id,
         "stations": len(rows),
         "invalid": invalid,
         "stale": stale,
-        "eligible": sum(r[3] for r in observations),
+        "eligible": eligible_count,
         "repeated_source": repeated,
         "ttl": ttl,
         "raw_path": str(target),
