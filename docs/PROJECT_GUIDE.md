@@ -725,7 +725,7 @@ resolved. Commit hashes refer to the `main` branch.
 - Prediction logging before the target window with model version and snapshot id.
 - Deployed to the Windows VPS with scheduled tasks and an SSH tunnel.
 - Sprint 1 closed with a recorded scope change: 12-month trips, PostgreSQL, and
-  weather moved to Sprint 2. Board: 17 Done, 11 Todo.
+  weather moved to Sprint 2. Board today: 17 Done, 11 Todo.
 
 **4 November 2026 — Host migration and storage fix**
 - Migrated to a London Ubuntu 26.04 VPS (4GB RAM, 50GB NVMe + 700GB HDD).
