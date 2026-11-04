@@ -69,15 +69,13 @@ curl -s localhost:8000/freshness | python3 -m json.tool
 
 ## Retention
 
-90-day raw retention via `/etc/cron.weekly/bikeflow-retention`:
+No automatic deletion. All raw snapshots are kept so the history is complete for
+later model evaluation and retraining.
 
-```sh
-#!/bin/sh
-find /data/gbfs -type f -name '*.json.gz' -mtime +90 -delete
-```
-
-At ~1.6GB per 8 days (~200MB/day), 90 days is roughly 18GB — far below 690GB
-free.
+Growth is about 200MB per day (~6GB per month, ~72GB per year), against 690GB
+free. At that rate the disk lasts roughly nine years. Watch `df -h /data`
+monthly; if space ever becomes tight, archive older years to object storage
+instead of deleting.
 
 ## Migration notes (4 November 2026)
 
