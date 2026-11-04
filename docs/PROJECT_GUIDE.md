@@ -252,26 +252,26 @@ the reports list every excluded category with counts.
 1. **Raw** — the complete discovery + information + status JSON, gzipped, at
    `data/raw/gbfs/YYYY/MM/DD/<poll_id>.json.gz`. Nothing is flattened or
    discarded, so a parser bug can be fixed later without losing history.
-2. **Indexed** — SQLite `observations.sqlite`: `polls` (one row per fetch),
-   `observations` (one row per station per poll, with an eligibility flag and
-   an issues list), `errors` (failed fetches), and later `predictions`.
+2. **Indexed** — SQLite `observations.sqlite`: `polls` (one row per fetch,
+   including station/invalid/stale/eligible counts, hash, raw path, TTL),
+   `errors` (failed fetches), and `predictions`. Station state is **not**
+   duplicated here; the API reads it from the newest raw snapshot.
 3. **Summarised** — `bikeflow coverage` prints polls, gaps, repeated-source
    count, invalid and stale counts, and errors.
 
-### 3.6 Known scale issue: observations table size
+### 3.6 Resolved scale issue: observations table size
 
-`observations` stores one row per station per poll, including the station's
+An earlier schema stored one row per station per poll, including each station's
 complete JSON payload as text. At 4,147 polls × 2,519 stations (~10.4M rows,
 ~1KB per payload) the database reached **11.2GB**, while the raw gzip archive
-holding the same information was **1.5GB**. The payload is duplicated: once
-compressed in the raw snapshot and once uncompressed in SQLite.
+holding the same information was **1.5GB** — the payload was duplicated.
 
-Planned fix (Sprint 2): store bikes, docks, disabled counts and flags as
-integer columns, drop the redundant payload column (or compress it), and keep
-the raw snapshot as the only full-fidelity copy. The database should grow
-proportionally to poll count, not payload size. Until then, do not migrate
-`observations` between hosts; rebuild it on the new host and keep the raw
-archive as the source of truth.
+Resolved on 4 November 2026: the `observations` table was removed. The collector
+now records only poll metadata (including eligible/invalid/stale counts),
+errors, and predictions. The API reads station state directly from the newest
+raw snapshot (`polls.raw_path`). The database fell from 11.2GB to **18MB** for
+the same poll history. Raw snapshots remain the single source of truth for
+station state.
 
 ---
 
@@ -595,11 +595,12 @@ the proposal states.
 - **SQLite** (`observations.sqlite`) — a single-file relational database with no
   server process. Tables:
   - `polls` — one row per fetch (time, counts, hash, file path, TTL);
-  - `observations` — one row per station per poll (eligibility, issues, raw
-    payload);
   - `errors` — failed fetches;
   - `predictions` — every forecast served, with issue time, target time, and
     model version.
+  Station state is not stored here; the API reads the newest raw snapshot. An
+  earlier `observations` table duplicated every station payload and grew to
+  11.2GB for 4,147 polls; it was removed in November 2026.
   Chosen because there is a single writer (the collector) and operations are
   tiny. It will be replaced by PostgreSQL when multiple services need
   concurrent access.

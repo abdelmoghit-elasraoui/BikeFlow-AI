@@ -86,7 +86,9 @@ free.
 - The SQLite `observations` table was **not** migrated: it was 11.2GB because it
   repeats each station's JSON payload per poll. `polls` (8,023), `errors` (124),
   and `predictions` (14,689) were exported to CSV and imported into a fresh DB.
-  See `docs/PROJECT_GUIDE.md` section 3.6 and the Sprint 2 schema task.
+  The table has since been removed from the collector entirely; the API reads
+  station state from the newest raw snapshot. The database is 18MB for the same
+  history. See `docs/PROJECT_GUIDE.md` section 3.6.
 - Historical observations remain available in the raw archive; the database
   restarts from 4 November.
 - Collection was down from 24 October (Windows disk full) to 4 November. The

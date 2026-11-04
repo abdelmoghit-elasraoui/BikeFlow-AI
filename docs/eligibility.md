@@ -12,14 +12,13 @@ A station row is `eligible = 1` only when all hold:
 - The feed `last_updated` is not older than the same threshold.
 - The station has a matching row in `station_information`.
 
-Closed, stale, malformed, and unmatched rows stay in the raw archive and in the
-`observations` table for analysis, but never drive decisions. Repeated source
-payloads are flagged `repeated_source` and are not treated as new states.
+Closed, stale, malformed, and unmatched rows stay in the raw archive for
+analysis, but never drive decisions. Repeated source payloads are flagged
+`repeated_source` and are not treated as new states.
 
-Storage note: each `observations` row currently repeats the station's full JSON
-payload, which made the database 11.2GB for 4,147 polls (raw archive: 1.5GB).
-Sprint 2 replaces the payload text with integer count/flag columns so the
-database grows with poll count rather than payload size.
+Storage: the database keeps poll metadata, errors, and predictions only.
+Station state is read from the raw snapshot (the previous `observations` table
+duplicated every station payload and grew to 11.2GB; removed 4 November 2026).
 
 ## 2. Historical station-time targets (Session 2)
 

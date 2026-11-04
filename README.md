@@ -50,7 +50,7 @@ python3 -c "import gzip,json,glob; p=sorted(glob.glob('data/raw/gbfs/*/*/*/*.jso
 python3 -c "import gzip,json,glob,datetime; p=sorted(glob.glob('data/raw/gbfs/*/*/*/*.json.gz'))[-1]; b=json.load(gzip.open(p,'rt')); st=b['station_status']; print('retrieved_at:', st['retrieved_at']); print('feed last_updated:', st['payload']['last_updated']); r=st['payload']['data']['stations'][0]; print('station:', r['station_id'], 'last_reported:', r['last_reported'])"
 
 # SQLite index (eligible=1 usable, eligible=0 closed/stale — keep but don't use):
-python3 -c "import sqlite3; db=sqlite3.connect('data/observations.sqlite'); print(db.execute('SELECT id,station_count FROM polls ORDER BY retrieved_at DESC LIMIT 3').fetchall()); print(db.execute(\"SELECT station_id,eligible,issues FROM observations WHERE eligible=1 LIMIT 2\").fetchall())"
+python3 -c "import sqlite3; db=sqlite3.connect('data/observations.sqlite'); print(db.execute('SELECT id,station_count,eligible_count FROM polls ORDER BY retrieved_at DESC LIMIT 3').fetchall())"
 
 # Tests + lint:
 uv run pytest -q
@@ -61,8 +61,10 @@ uv run ruff format --check src tests
 Each successful poll stores the original discovery, metadata, and
 status JSON in `data/raw/gbfs/YYYY/MM/DD/*.json.gz`. Each feed has its retrieval
 time, original feed timestamp/version/TTL, and original station reporting times.
-SQLite indexes retrievals and normalized eligibility records in
-`data/observations.sqlite`. Repeated source responses are identified, not treated
+SQLite records retrievals, failure records, and predictions in
+`data/observations.sqlite`; station state itself stays only in the raw
+snapshots, so the database does not duplicate every station payload.
+Repeated source responses are identified, not treated
 as newly reported states. Errors are recorded separately; no missing observation
 is fabricated. Counts, duplicate IDs, operational flags, and freshness are checked.
 Closed/stale/invalid stations remain in the raw data but are not eligible for decisions.

@@ -153,8 +153,10 @@ retention rule, and add the weather join with cached, no-leakage forecast runs.
   integer columns and stop duplicating the full station JSON payload as text
   (keep it compressed or only in the raw archive). Observed scale: 4,147 polls
   produced an 11.2GB SQLite file versus 1.5GB of raw snapshots because each of
-  ~10.4M rows repeats a ~1KB payload. Target: database growth proportional to
-  poll count, not payload size.
+  ~10.4M rows repeats a ~1KB payload. **Resolved 4 November 2026:** the
+  observations table was removed entirely; the database keeps polls, errors,
+  and predictions (18MB for the same history) and the API reads station state
+  from the newest raw snapshot.
 
 - Build a React dashboard with a station map and normal/warning/critical states.
 - Show current available bikes/docks, 30-minute and 60-minute forecasts, and ranked recommendations with suggested quantities.
