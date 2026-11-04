@@ -1,4 +1,8 @@
-# VPS collector runbook (Windows 10)
+# VPS collector runbook (Windows 10) — superseded
+
+This describes the old Windows host. It has been replaced by the Ubuntu host in
+`ops/ubuntu-host.md` (4 November 2026). Kept for reference only.
+
 
 Purpose: keep `bikeflow collect` running 24/7 independent of the laptop.
 
