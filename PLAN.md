@@ -149,6 +149,13 @@ Carried from Sprint 1 (recorded scope change): extend trips to 12 months,
 introduce PostgreSQL for metadata/snapshots/predictions/evaluations with a
 retention rule, and add the weather join with cached, no-leakage forecast runs.
 
+- Compact the observations schema: store bikes/docks/flags/disabled counts as
+  integer columns and stop duplicating the full station JSON payload as text
+  (keep it compressed or only in the raw archive). Observed scale: 4,147 polls
+  produced an 11.2GB SQLite file versus 1.5GB of raw snapshots because each of
+  ~10.4M rows repeats a ~1KB payload. Target: database growth proportional to
+  poll count, not payload size.
+
 - Build a React dashboard with a station map and normal/warning/critical states.
 - Show current available bikes/docks, 30-minute and 60-minute forecasts, and ranked recommendations with suggested quantities.
 - Provide station details with recent archived availability, predicted flows, forecast assumptions, and data freshness. Show separate arrivals/departures history only where trip-derived data is actually available.

@@ -16,6 +16,11 @@ Closed, stale, malformed, and unmatched rows stay in the raw archive and in the
 `observations` table for analysis, but never drive decisions. Repeated source
 payloads are flagged `repeated_source` and are not treated as new states.
 
+Storage note: each `observations` row currently repeats the station's full JSON
+payload, which made the database 11.2GB for 4,147 polls (raw archive: 1.5GB).
+Sprint 2 replaces the payload text with integer count/flag columns so the
+database grows with poll count rather than payload size.
+
 ## 2. Historical station-time targets (Session 2)
 
 The public trip archive has no station opening/closing dates, so v0 uses a

@@ -258,6 +258,21 @@ the reports list every excluded category with counts.
 3. **Summarised** — `bikeflow coverage` prints polls, gaps, repeated-source
    count, invalid and stale counts, and errors.
 
+### 3.6 Known scale issue: observations table size
+
+`observations` stores one row per station per poll, including the station's
+complete JSON payload as text. At 4,147 polls × 2,519 stations (~10.4M rows,
+~1KB per payload) the database reached **11.2GB**, while the raw gzip archive
+holding the same information was **1.5GB**. The payload is duplicated: once
+compressed in the raw snapshot and once uncompressed in SQLite.
+
+Planned fix (Sprint 2): store bikes, docks, disabled counts and flags as
+integer columns, drop the redundant payload column (or compress it), and keep
+the raw snapshot as the only full-fidelity copy. The database should grow
+proportionally to poll count, not payload size. Until then, do not migrate
+`observations` between hosts; rebuild it on the new host and keep the raw
+archive as the source of truth.
+
 ---
 
 ## 4. What has been built so far
