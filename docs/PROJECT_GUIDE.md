@@ -684,3 +684,116 @@ the proposal states.
 - **VPS** — Virtual Private Server, a rented always-on machine.
 - **ZIP** — a compressed archive file format; the monthly trip archives contain
   CSV files inside a ZIP.
+
+---
+
+## 11. Work log and issue register
+
+Chronological record of what was built, what broke, and how each problem was
+resolved. Commit hashes refer to the `main` branch.
+
+### 11.1 Timeline
+
+**6 October 2026 — Session 1: data foundation**
+- Python 3.12, `uv`, installable CLI, pytest and ruff.
+- GBFS discovery and collector: raw gzip snapshots, SQLite poll index, feed and
+  station freshness checks, repeated-source detection, explicit failure logging.
+- February 2026 trip audit: 1,219,444 trips, 0 bad timestamps, 1,119 missing
+  start IDs, 8,058 missing end IDs.
+- Station mapping: 2,130 verified matches, 74 inactive, 71 unmatched, 2 renamed.
+- Diagnostic 30-minute arrival/departure table for 20 busiest stations.
+- Nine tests.
+
+**14 October 2026 — Session 2: targets and baseline**
+- Three months downloaded with SHA-256 per file (5,127,455 trips).
+- `bikeflow session2`: NYC→UTC conversion, DST exclusion, matched-ID filtering,
+  30/60-minute aggregation, partitioned Parquet.
+- Eligibility spans: first/last observed trip day; outside-span windows absent.
+- Baseline v0: 30min MAE 0.485/0.479, 60min 0.821/0.811.
+- Mandatory timestamped progress logging (`AGENTS.md` rule).
+- Two bugs fixed: timezone dropped during grouping (all-zero Parquet) and a
+  28-minute per-station baseline loop (vectorised to seconds).
+
+**21 October 2026 — Sprint 1: models and API**
+- Four pooled LightGBM models (30/60min × departures/arrivals), calendar-only
+  features, chronological split with an untouched final 14 days.
+- Model vs baseline: 30min 0.412/0.408 vs 0.478/0.472 (+13.8%/+13.4%);
+  60min 0.746/0.740 vs 0.811/0.801 (+8.0%/+7.5%). Better on the 50 busiest
+  stations too.
+- Artifacts: four boosters, dataset hash, station-code mapping, metrics.
+- FastAPI: health, freshness, stations, forecasts, ranked queue, predictions.
+- Prediction logging before the target window with model version and snapshot id.
+- Deployed to the Windows VPS with scheduled tasks and an SSH tunnel.
+- Sprint 1 closed with a recorded scope change: 12-month trips, PostgreSQL, and
+  weather moved to Sprint 2. Board: 17 Done, 11 Todo.
+
+**4 November 2026 — Host migration and storage fix**
+- Migrated to a London Ubuntu 26.04 VPS (4GB RAM, 50GB NVMe + 700GB HDD).
+- Raw snapshots moved day by day (8,135 files); small tables exported/imported.
+- systemd services with automatic restart; key-only SSH; tunnel from the Mac.
+- Removed the duplicated `observations` table: database 11.2GB → 18MB; API reads
+  station state from the newest raw snapshot.
+- Removed the retention cap: all raw history is kept (~200MB/day).
+
+### 11.2 Issue register
+
+| # | Symptom | Root cause | Fix |
+| ---: | --- | --- | --- |
+| 1 | `uv sync` picked the wrong Python | System Python outside `>=3.12,<3.14` | `uv` pinned 3.12; `.python-version` and `uv.lock` |
+| 2 | TLS `CERTIFICATE_VERIFY_FAILED` on the Windows VPS | System clock was wrong; time service stopped | `Start-Service w32time`, `w32tm /resync`; verification kept on |
+| 3 | `Stop-ScheduledTask` not recognized | SSH landed in cmd, not PowerShell | Used `schtasks` or `powershell -Command` |
+| 4 | LightGBM `lib_lightgbm.dll` missing on Windows | Visual C++ runtime absent | Installed VC++ redistributable |
+| 5 | `libgomp.so.1` missing on Ubuntu | Minimal image lacks OpenMP | `apt install libgomp1` |
+| 6 | API reads hung while the collector wrote | One SQLite connection shared across FastAPI threads | Per-request connections + 30s snapshot cache |
+| 7 | Unknown station id returned fake 0/0 state | No membership check | `404` with a pointer to `/stations` |
+| 8 | Every station got the same prediction | Models keyed by trip IDs, live feed uses UUID/legacy IDs | Built and stored a 2,130-entry live→trip bridge from `station_mapping.csv` |
+| 9 | 30-minute forecast targeted the 60-minute window | `ceil(30min) + 30min` | Target is the next boundary: `ceil(horizon)` |
+| 10 | Negative predicted arrivals | Regression can emit small negatives | Clamp flows at zero |
+| 11 | Queue topped by unusable 0-bike/0-dock stalls | Filter checked only operational flags | Exclude stations with no usable bikes or docks; recommendations respect physical possibility |
+| 12 | Parquet targets were all zeros | Grouping on `.values` dropped timezone; keys never matched | Re-localise windows to UTC at the source; regression test that compares Parquet sums with event totals |
+| 13 | Baseline stage took 28+ minutes | Per-station pandas loop (2,130 iterations × 4 configs) | Vectorised grid and groupby; seconds |
+| 14 | GitHub Actions workflows removed too early | Local-only simplification | Recorded as a scope change; workflow restoration is a Sprint 4 requirement |
+| 15 | Board cards duplicated or lost statuses | `gh project item-create` prints nothing without `--format json` | Parse JSON ids; deduplicate by title |
+| 16 | Windows disk filled; collection died 24 Oct–4 Nov | 11.2GB DB + 1.6GB raw on a 60GB disk | Migrated to Ubuntu with a 700GB disk; outage recorded in `errors` and `coverage` |
+| 17 | Database 11.2GB for 8,023 polls | `observations` repeated every station's JSON payload per poll | Removed the table; DB keeps polls/errors/predictions (18MB); API reads raw snapshots |
+| 18 | SSH password login denied on Ubuntu | Cloud image disables password auth for root | Used key relay through the Mac; password auth not enabled |
+| 19 | Windows key auth stopped working | `administrators_authorized_keys` missing/changed after restart | Reinstalled key, fixed ACLs, restarted sshd |
+| 20 | systemd `status=203/EXEC` | venv Python lived under `/root`, unreadable by the service user | Copied Python to `/opt/uv-python`, recreated the venv, `chown` to `bikeflow` |
+| 21 | `git pull` refused: dubious ownership | Repo owned by `bikeflow`, pulled as root | `git config --global --add safe.directory /srv/bikeflow` |
+| 22 | API task failed with “unrecognized arguments” | `--data-dir` is a global flag placed after `serve` | Put it before the subcommand |
+| 23 | SSH tunnel returned empty replies | Windows resolved `localhost` to IPv6 while uvicorn bound IPv4 | Tunnel to `127.0.0.1` explicitly |
+| 24 | GitHub push returned HTTP 500 | Transient GitHub error | Retried; push succeeded |
+| 25 | Relay archive truncated | SSH connection dropped mid-stream | Transferred per day; verified file counts |
+
+### 11.3 Features delivered
+
+- GBFS discovery with runtime URL resolution (no hardcoded hosts).
+- Raw snapshot archive with retrieval time, feed time, TTL, and station reporting
+  time preserved.
+- Poll index with repeated-source detection and explicit error records.
+- Trip audit: schema, timestamps, DST handling, missing IDs, coordinates,
+  SHA-256.
+- Station mapping with name/coordinate verification and review categories.
+- 30/60-minute Parquet targets with explicit eligibility spans.
+- Historical-average baseline with held-out MAE.
+- Four pooled LightGBM models with chronological evaluation and artifact export.
+- FastAPI endpoints: `/health`, `/freshness`, `/stations`,
+  `/forecasts/{id}?horizon=30|60`, `/queue`, `/predictions`.
+- Warning score and physically valid recommendations.
+- Prediction log written before the target interval.
+- 24/7 collection on a Linux host with systemd restart, key-only SSH, and an SSH
+  tunnel for API access.
+- 16 automated tests and lint/format checks.
+- Documentation: project guide, eligibility rules, verification pack, host
+  runbooks.
+
+### 11.4 Current status (4 November 2026)
+
+- Collector: active, one poll per minute, 8,150+ snapshots, 2,518 stations.
+- API: active, snapshot age under 60s, model `v1`.
+- Database: 18MB (polls, errors, predictions).
+- Raw archive: 1.6GB on the 700GB disk, no deletion policy.
+- Sprint 1: complete with a recorded scope change; Sprint 2 backlog on the
+  GitHub project board.
+- Known growth item: `predictions` grows ~2,500 rows per `/queue` call; retention
+  or dedup is a Sprint 2 task.
