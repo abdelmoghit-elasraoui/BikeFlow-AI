@@ -1,14 +1,17 @@
 # Ubuntu host runbook
 
-The collector and API run on a London Ubuntu 26.04 VPS (4GB RAM, 50GB NVMe +
-700GB HDD). Replaces the earlier Windows host.
+The collector and API run on a Sydney Ubuntu 26.04 VPS (2 vCPU, 3GB RAM,
+20GB NVMe + 100GB HDD). Replaces the earlier London host, which replaced the
+Windows host. Chosen for cost: only three months of semester remain and the
+measured load is small.
 
 ## Layout
 
 ```
 /srv/bikeflow/            code, venv, SQLite, models
 /srv/bikeflow/data/raw/gbfs -> /data/gbfs   (symlink)
-/data/gbfs/               raw snapshots (700GB disk)
+/data/gbfs/               raw snapshots (100GB disk)
+/data/sidace_harvester/   separate harvested document set
 ```
 
 The database stays on the NVMe (`/srv/bikeflow/data/observations.sqlite`);
@@ -54,16 +57,16 @@ System Python is 3.14, outside the project's `>=3.12,<3.14` range.
 `~/.ssh/config`:
 
 ```
-Host bikeflow-ubuntu
-  HostName 51.195.191.88
-  Port 4373
+Host bikeflow
+  HostName 139.99.145.71
+  Port 3137
   User root
 ```
 
 Tunnel and check:
 
 ```bash
-ssh -f -N -L 8000:127.0.0.1:8000 bikeflow-ubuntu
+ssh -f -N -L 8000:127.0.0.1:8000 bikeflow
 curl -s localhost:8000/freshness | python3 -m json.tool
 ```
 
@@ -72,12 +75,24 @@ curl -s localhost:8000/freshness | python3 -m json.tool
 No automatic deletion. All raw snapshots are kept so the history is complete for
 later model evaluation and retraining.
 
-Growth is about 200MB per day (~6GB per month, ~72GB per year), against 690GB
-free. At that rate the disk lasts roughly nine years. Watch `df -h /data`
-monthly; if space ever becomes tight, archive older years to object storage
-instead of deleting.
+Growth is about 300MB per day (~9GB per month), against 82GB free on the
+100GB disk. Three months of collection needs roughly 27GB, leaving room for the
+9.2GB `sidace_harvester` set and snapshots. Watch `df -h /data` monthly.
 
-## Migration notes (4 November 2026)
+## Migration notes (12 November 2026, London → Sydney)
+
+- New host: 2 vCPU, 3GB RAM, 20GB root + 100GB data disk (98GB usable).
+- Data copied server-to-server with rsync using a dedicated key generated on the
+  new host: raw snapshots (19,399 files, 3.8GB), `sidace_harvester` (9.2GB),
+  SQLite DB, models, and processed targets.
+- Services were installed with the same systemd units and started after the
+  copy; the old London services were stopped and disabled.
+- No data loss: the poll history is continuous (gap only for the minutes during
+  the switch).
+- Mac SSH alias `bikeflow` now points to the Sydney host (port 3137); the London
+  host is `bikeflow-old` for rollback.
+
+## Migration notes (4 November 2026, Windows → London)
 
 - Raw snapshots (8,135 files, 1.6GB) were moved day by day; checksum-free but
   file counts match the source.
