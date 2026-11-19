@@ -22,6 +22,7 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 
 from .gbfs import utc_now
+from .live import CORRECTION_FEATURES, serving_features
 from .model import feature_columns
 
 _state_lock = threading.Lock()
@@ -67,7 +68,20 @@ def _read_latest(db_path):
     except FileNotFoundError:
         return None, None
     rows = bundle["station_status"]["payload"]["data"]["stations"]
-    return {"poll_id": poll_id, "retrieved_at": retrieved}, {row["station_id"]: row for row in rows}
+    # Capacity comes from station_information in the same poll. Attaching it
+    # here keeps one snapshot read for serving, freshness and the live-state
+    # features that feed the correction model.
+    capacity = {
+        row["station_id"]: int(row.get("capacity") or 0)
+        for row in bundle.get("station_information", {})
+        .get("payload", {})
+        .get("data", {})
+        .get("stations", [])
+    }
+    states = {row["station_id"]: row for row in rows}
+    for station_id, state in states.items():
+        state["capacity"] = capacity.get(station_id, 0)
+    return {"poll_id": poll_id, "retrieved_at": retrieved}, states
 
 
 def latest_snapshot(db_path, cache=None):
@@ -131,6 +145,20 @@ def create_app(models_dir, data_dir):
             if table.size < needed:
                 table = np.pad(table, (0, needed - table.size), constant_values=float(table.mean()))
             base_tables[(horizon, flow)] = table
+    # The live-state correction is additive on top of the calendar forecast and
+    # is only loaded when it beat that forecast on its own held-out overlap.
+    live_models = {}
+    live_metrics_path = models_dir / "live_metrics.json"
+    if live_metrics_path.exists():
+        live_metrics = json.loads(live_metrics_path.read_text())
+        for horizon in (30, 60):
+            for flow in ("departures", "arrivals"):
+                entry = live_metrics.get(f"{horizon}min", {}).get(flow)
+                if not entry or not entry.get("validation", {}).get("enabled"):
+                    continue
+                path = models_dir / entry["model_file"]
+                if path.exists():
+                    live_models[(horizon, flow)] = lgb.Booster(model_file=str(path))
     db_path = data_dir / "observations.sqlite"
     with closing(connect(db_path)):
         pass  # create the predictions table if absent
@@ -167,6 +195,13 @@ def create_app(models_dir, data_dir):
                     + slot
                 )
                 raw = raw + table[key]
+            correction = live_models.get((horizon, flow))
+            if correction is not None:
+                # The correction sees the calendar forecast and the state of
+                # the station as the snapshot reports it right now.
+                serving_features(frame, stations)
+                frame["calendar"] = raw
+                raw = raw + correction.predict(frame[CORRECTION_FEATURES])
             predictions[flow] = raw
         issued = utc_now()
         rows = []
