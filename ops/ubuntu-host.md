@@ -33,9 +33,28 @@ journalctl -u bikeflow-api -n 20 --no-pager
 ```
 
 - `bikeflow-collector.service` runs `collect --count 0 --interval 60`.
-- `bikeflow-api.service` runs `serve --version v1 --host 127.0.0.1 --port 8000`.
+- `bikeflow-api.service` runs `serve --version v2 --host 127.0.0.1 --port 8000`.
 
 Both `Restart=always` with a 10s delay.
+
+## Weather archive
+
+Hourly forecasts are archived every 30 minutes so serving never calls an
+external API. The unit files are `ops/bikeflow-weather.service` and
+`ops/bikeflow-weather.timer`.
+
+```bash
+cp ops/bikeflow-weather.* /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now bikeflow-weather.timer
+systemctl list-timers bikeflow-weather.timer --no-pager
+journalctl -u bikeflow-weather -n 10 --no-pager
+ls -lh /srv/bikeflow/data/weather/live_forecast.parquet
+```
+
+The API reads `data/weather/live_forecast.parquet` when the served model lists
+weather columns in `metadata.json`; if the file is missing, the weather columns
+stay empty and LightGBM handles the missing values.
 
 ## Why the venv is special
 

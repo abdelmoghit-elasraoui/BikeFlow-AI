@@ -30,3 +30,34 @@ def tiny_dataset(tmp_path):
         out.mkdir(parents=True, exist_ok=True)
         target.to_parquet(out / "part-000.parquet", index=False)
     return tmp_path
+
+
+@pytest.fixture()
+def tiny_weather(tmp_path):
+    """A cached weather directory covering the tiny dataset's months."""
+    import numpy as np
+
+    from bikeflow.weather import RAW_FEATURES, WEATHER_FEATURES
+
+    directory = tmp_path / "weather"
+    directory.mkdir()
+    hours = pd.date_range("2026-01-01", "2026-03-31 23:00", freq="h", tz="UTC")
+    frame = pd.DataFrame({"weather_hour": hours})
+    values = {
+        "temperature_2m": 8.0,
+        "apparent_temperature": 7.0,
+        "precipitation": 0.0,
+        "wind_speed_10m": 9.0,
+        "relative_humidity_2m": 65.0,
+        "cloud_cover": 30.0,
+        "snow_depth": 0.0,
+        "visibility": 18000.0,
+    }
+    for name in RAW_FEATURES:
+        frame[name] = np.float32(values[name])
+    frame["is_precipitating"] = 0
+    frame["is_cold"] = 0
+    frame = frame[["weather_hour", *WEATHER_FEATURES]]
+    for month in ("202601", "202602", "202603"):
+        frame.to_parquet(directory / f"forecast_{month}.parquet", index=False)
+    return directory

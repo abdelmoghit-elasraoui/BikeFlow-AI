@@ -40,6 +40,10 @@ def main():
     )
     train.add_argument("--models", type=Path, default=Path("data/models"))
     train.add_argument(
+        "--weather", action="store_true", help="Join hourly weather features (v3 and later)"
+    )
+    train.add_argument("--weather-cache", type=Path, default=Path("data/raw/weather"))
+    train.add_argument(
         "--mapping",
         type=Path,
         default=Path("reports/first-session/station_mapping.csv"),
@@ -108,7 +112,15 @@ def main():
 
         print(
             json.dumps(
-                run_training(args.targets, args.models, args.version, args.mapping, args.months),
+                run_training(
+                    args.targets,
+                    args.models,
+                    args.version,
+                    args.mapping,
+                    args.months,
+                    weather=args.weather,
+                    weather_cache=args.weather_cache,
+                ),
                 indent=2,
                 default=str,
             )

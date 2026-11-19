@@ -65,8 +65,8 @@ def add_features(frame):
     return frame
 
 
-def feature_columns():
-    return [
+def feature_columns(include_weather=False):
+    columns = [
         "station_code",
         "weekday",
         "hour",
@@ -74,6 +74,12 @@ def feature_columns():
         "is_weekend",
         "day_of_year",
     ]
+    if include_weather:
+        # Imported here: weather.py imports log() from this module.
+        from .weather import WEATHER_FEATURES
+
+        columns.extend(WEATHER_FEATURES)
+    return columns
 
 
 def encode_stations(train, others):
@@ -123,7 +129,7 @@ def per_row_key_mean(frame, horizon, cutoff, flow):
     return base.astype(np.float32), means.astype(np.float32)
 
 
-def train_one(horizon, flow, frame, val_start, test_start, params, base):
+def train_one(horizon, flow, frame, val_start, test_start, params, base, features):
     """Fit one pooled model on the residual around the per-key mean.
 
     The 13-month build holds ~38M rows; three full-frame copies (train, val,
@@ -131,7 +137,6 @@ def train_one(horizon, flow, frame, val_start, test_start, params, base):
     centred on ``base`` so the model learns corrections (season, holidays)
     rather than reproducing a 715k-key lookup table with 31 leaves per tree.
     """
-    features = feature_columns()
     val_ts = pd.Timestamp(val_start).to_datetime64()
     test_ts = pd.Timestamp(test_start).to_datetime64()
     windows = utc_naive(frame.window_start_utc)
@@ -205,6 +210,8 @@ def run_training(
     version,
     mapping_path=Path("reports/first-session/station_mapping.csv"),
     months=("202512", "202601", "202602"),
+    weather=False,
+    weather_cache=Path("data/raw/weather"),
 ):
     """Train 4 models, compare against baseline v0, write artifacts + metrics."""
     out_dir, models_dir = Path(out_dir), Path(models_dir)
@@ -223,7 +230,11 @@ def run_training(
         log(f"Mapping: {len(live_to_trip):,} live GBFS ids bridged to trip ids")
     else:
         log(f"Mapping: {mapping_path} missing; live ids will fall back to unknown codes")
-    log(f"Training run starting: version {version}, months {months}")
+    log(
+        f"Training run starting: version {version}, months {months}, "
+        f"weather {'on' if weather else 'off'}"
+    )
+    weather_digest = None
     params = {
         "n_estimators": 600,
         "learning_rate": 0.05,
@@ -248,6 +259,20 @@ def run_training(
     for horizon in HORIZONS:
         frame = load_targets(out_dir, horizon)
         frame = add_features(frame)
+        if weather:
+            from .weather import add_weather_features
+            from .weather import load as load_weather
+
+            start = str(frame.window_start_utc.min().date())
+            end = str((frame.window_start_utc.max() + pd.Timedelta(days=1)).date())
+            weather_frame = load_weather(start, end, weather_cache)
+            if weather_digest is None:
+                weather_digest = hashlib.sha256(
+                    pd.util.hash_pandas_object(weather_frame, index=False).values.tobytes()
+                ).hexdigest()
+            frame = add_weather_features(frame, weather_frame)
+            del weather_frame
+        features = feature_columns(weather)
         log(f"Model {horizon}min: dataset hash update")
         # Per column: hashing the 4-column frame at once built a ~1GB copy of
         # the 13-month table just to fingerprint it.
@@ -282,11 +307,12 @@ def run_training(
             # saved model predicts the correction, not the level.
             base, key_means = per_row_key_mean(frame, horizon, val_start, flow)
             np.save(version_dir / f"{horizon}min_{flow}_base.npy", key_means)
-            booster, test = train_one(horizon, flow, frame, val_start, test_start, params, base)
+            booster, test = train_one(
+                horizon, flow, frame, val_start, test_start, params, base, features
+            )
             del base, key_means
             model_path = version_dir / f"{horizon}min_{flow}.txt"
             booster.booster_.save_model(str(model_path))
-            features = feature_columns()
             model_pred = booster.predict(test[features]) + test.base.to_numpy()
             base_pred = pd.Series(
                 [
@@ -338,7 +364,17 @@ def run_training(
         "dataset_hash": dataset_hash.hexdigest(),
         "months": list(months),
         "targets_dir": str(out_dir),
-        "feature_columns": feature_columns(),
+        "feature_columns": features,
+        "weather": (
+            {
+                "source": "open-meteo historical forecast",
+                "variables": features[len(feature_columns()) :],
+                "cache": str(weather_cache),
+                "digest": weather_digest,
+            }
+            if weather
+            else None
+        ),
         "station_codes": station_mapping,
         "unknown_station_code": int(unknown_code),
         "base_offset": "per (station, weekday, slot) train mean, additive",

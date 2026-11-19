@@ -24,6 +24,7 @@ from fastapi import FastAPI, HTTPException, Query
 from .gbfs import utc_now
 from .live import CORRECTION_FEATURES, serving_features
 from .model import feature_columns
+from .weather import add_weather_features, load_live
 
 _state_lock = threading.Lock()
 LOW_WATER = 3.0
@@ -127,6 +128,7 @@ def create_app(models_dir, data_dir):
     models = load_models(models_dir)
     metadata = json.loads((models_dir / "metadata.json").read_text())
     station_codes = metadata.get("station_codes", {})
+    model_features = metadata.get("feature_columns") or feature_columns()
     # The unknown code is the first index past the trained categories, not the
     # size of the served mapping: station_codes also carries live-id bridges.
     unknown_code = metadata.get("unknown_station_code", max(station_codes.values(), default=-1) + 1)
@@ -177,9 +179,15 @@ def create_app(models_dir, data_dir):
         )
         frame["station_code"] = [station_codes.get(s, unknown_code) for s in station_ids]
         frame = build_features(frame, horizon)
+        if metadata.get("weather"):
+            # The archived forecast, read at request time: no external call on
+            # the serving path. Missing hours stay NaN and LightGBM handles it.
+            weather = load_live(data_dir / "weather")
+            if weather is not None:
+                frame = add_weather_features(frame, weather)
         predictions = {}
         for flow in ("departures", "arrivals"):
-            raw = models[(horizon, flow)].predict(frame[feature_columns()])
+            raw = models[(horizon, flow)].predict(frame[model_features])
             table = base_tables.get((horizon, flow))
             if table is not None:
                 # The booster predicts the correction around the per-key mean,

@@ -168,3 +168,67 @@ def test_api_scores_station_unseen_in_training(tiny_dataset, tmp_path):
         np.save(path, table[: len(table) - 336])
     client = TestClient(create_app(models_dir, data_dir))
     assert client.get("/queue?horizon=30&limit=5").status_code == 200
+
+
+def test_training_with_weather_records_and_uses_the_join(tiny_dataset, tiny_weather, tmp_path):
+    import lightgbm as lgb
+
+    result = run_training(
+        tiny_dataset,
+        tmp_path / "models",
+        "vw",
+        months=("tiny",),
+        weather=True,
+        weather_cache=tiny_weather,
+    )
+    metadata = result["metadata"]
+    assert "temperature_2m" in metadata["feature_columns"]
+    assert metadata["weather"]["digest"]
+    assert metadata["weather"]["source"] == "open-meteo historical forecast"
+    booster = lgb.Booster(model_file=str(tmp_path / "models" / "vw" / "30min_departures.txt"))
+    assert booster.num_feature() == len(metadata["feature_columns"])
+
+
+def test_api_serves_a_model_with_weather_features(tiny_dataset, tiny_weather, tmp_path):
+    import numpy as np
+    from fastapi.testclient import TestClient
+
+    from bikeflow.api import create_app
+    from bikeflow.weather import RAW_FEATURES, WEATHER_FEATURES
+
+    run_training(
+        tiny_dataset,
+        tmp_path / "models",
+        "vw",
+        months=("tiny",),
+        weather=True,
+        weather_cache=tiny_weather,
+    )
+    data_dir = tmp_path / "data"
+    now = pd.Timestamp.now(tz="UTC")
+    station = {
+        "station_id": "a",
+        "num_bikes_available": 3,
+        "num_docks_available": 20,
+        "is_installed": 1,
+        "is_renting": 1,
+        "is_returning": 1,
+        "last_reported": int(now.timestamp()),
+    }
+    _write_snapshot(data_dir, "poll1", [station], now)
+
+    hours = pd.date_range(now.floor("h") - pd.Timedelta(hours=1), periods=5, freq="h")
+    live = pd.DataFrame({"weather_hour": hours})
+    for name in RAW_FEATURES:
+        live[name] = np.float32(10.0)
+    live["is_precipitating"] = 0
+    live["is_cold"] = 0
+    (data_dir / "weather").mkdir(parents=True)
+    live[["weather_hour", *WEATHER_FEATURES]].to_parquet(
+        data_dir / "weather" / "live_forecast.parquet", index=False
+    )
+
+    client = TestClient(create_app(tmp_path / "models" / "vw", data_dir))
+    response = client.get("/forecasts/a?horizon=30")
+    assert response.status_code == 200, response.text
+    assert response.json()["forecast_departures"] >= 0

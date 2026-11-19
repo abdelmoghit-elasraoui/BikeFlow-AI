@@ -1,0 +1,11 @@
+[Unit]
+Description=Archive the BikeFlow hourly weather forecast every 30 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

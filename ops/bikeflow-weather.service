@@ -1,0 +1,12 @@
+[Unit]
+Description=BikeFlow hourly forecast archive
+Documentation=file:/srv/bikeflow/docs/PROJECT_GUIDE.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=bikeflow
+Group=bikeflow
+WorkingDirectory=/srv/bikeflow
+ExecStart=/srv/bikeflow/.venv/bin/bikeflow weather-collect
