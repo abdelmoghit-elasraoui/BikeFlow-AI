@@ -19,6 +19,7 @@ import bisect
 import gzip
 import json
 import re
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -132,7 +133,7 @@ def build_live_features(data_dir, start, end, horizon, station_codes):
             try:
                 capacity, rows = parse_poll(polls[candidate][1])
                 break
-            except (OSError, EOFError, ValueError):
+            except (OSError, EOFError, ValueError, zlib.error):
                 corrupt += 1
         if rows is None:
             log(f"Live: no intact poll for {assigned[0]}, window dropped")
