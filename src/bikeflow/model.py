@@ -94,11 +94,42 @@ def utc_naive(values):
     return index.to_numpy()
 
 
-def train_one(horizon, flow, frame, val_start, test_start, params):
-    """Fit one pooled model, slicing features instead of copying the frame.
+def per_row_key_mean(frame, horizon, cutoff, flow):
+    """(station, weekday, slot) mean from rows before cutoff, as a flat array.
+
+    Integer key arithmetic instead of a MultiIndex: a 40M-row tuple index
+    costs gigabytes, while ``station_code * 336 + weekday * 48 + slot`` fits
+    bincount in a few megabytes. Used as the additive offset the model fits
+    a correction to, so it does not spend its leaves re-learning a lookup
+    table it can be handed directly.
+    """
+    stations = int(frame.station_code.max()) + 1
+    width = stations * 7 * 48
+    slot = (
+        frame.minute_slot.to_numpy(np.int64) // 30
+        if horizon == 30
+        else frame.hour.to_numpy(np.int64)
+    )
+    key = frame.station_code.to_numpy(np.int64) * 336 + frame.weekday.to_numpy(np.int64) * 48 + slot
+    mask = utc_naive(frame.window_start_utc) < pd.Timestamp(cutoff).to_datetime64()
+    values = frame[flow].to_numpy(np.float64)
+    totals = np.bincount(key[mask], weights=values[mask], minlength=width)
+    counts = np.bincount(key[mask], minlength=width).astype(np.float64)
+    means = np.divide(totals, counts, out=np.zeros_like(totals), where=counts > 0)
+    base = means[key]
+    missing = counts[key] == 0
+    if missing.any():
+        base[missing] = float(values[mask].mean())
+    return base.astype(np.float32), means.astype(np.float32)
+
+
+def train_one(horizon, flow, frame, val_start, test_start, params, base):
+    """Fit one pooled model on the residual around the per-key mean.
 
     The 13-month build holds ~38M rows; three full-frame copies (train, val,
-    test) plus LightGBM's own conversion do not fit in 8GB of RAM.
+    test) plus LightGBM's own conversion do not fit in 8GB of RAM. Targets are
+    centred on ``base`` so the model learns corrections (season, holidays)
+    rather than reproducing a 715k-key lookup table with 31 leaves per tree.
     """
     features = feature_columns()
     val_ts = pd.Timestamp(val_start).to_datetime64()
@@ -114,14 +145,20 @@ def train_one(horizon, flow, frame, val_start, test_start, params):
     booster = lgb.LGBMRegressor(**params)
     booster.fit(
         frame.loc[train_mask, features],
-        frame.loc[train_mask, flow],
-        eval_set=[(frame.loc[val_mask, features], frame.loc[val_mask, flow])],
+        frame.loc[train_mask, flow].to_numpy() - base[train_mask],
+        eval_set=[
+            (
+                frame.loc[val_mask, features],
+                frame.loc[val_mask, flow].to_numpy() - base[val_mask],
+            )
+        ],
         eval_metric="l1",
         categorical_feature=["station_code"],
         callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)],
     )
     log(f"Model {horizon}min {flow}: best_iteration {booster.best_iteration_}")
     test = frame.loc[test_mask, ["station_id", *features, flow]].copy()
+    test["base"] = base[test_mask]
     return booster, test
 
 
@@ -199,10 +236,15 @@ def run_training(
         "random_state": 42,
         "n_jobs": 4,
         "verbose": -1,
+        # MAE is minimised by the conditional median, not the mean. Training
+        # with L2 and scoring with L1 capped v2 at the per-key mean baseline
+        # (0.896) while the per-key median reaches 0.871 on the same rows.
+        "objective": "regression_l1",
     }
     metrics = {"generated_at": utc_now(), "version": version, "horizons": {}}
     dataset_hash = hashlib.sha256()
     station_mapping = {}
+    unknown_code = 0
     for horizon in HORIZONS:
         frame = load_targets(out_dir, horizon)
         frame = add_features(frame)
@@ -231,6 +273,7 @@ def run_training(
         bridged = {
             live: int(mapping[trip]) for live, trip in live_to_trip.items() if trip in mapping
         }
+        unknown_code = int(unknown)
         station_mapping.update(bridged)
         log(
             f"Model {horizon}min: {len(mapping):,} station codes, "
@@ -239,11 +282,17 @@ def run_training(
         horizon_metrics = {"val_start": val_start, "test_start": test_start, "flows": {}}
         for flow in FLOWS:
             log(f"Model {horizon}min {flow}: training")
-            booster, test = train_one(horizon, flow, frame, val_start, test_start, params)
+            # Offset uses train rows only, so val and test see a mean the
+            # model never fitted on. The table ships with the booster: the
+            # saved model predicts the correction, not the level.
+            base, key_means = per_row_key_mean(frame, horizon, val_start, flow)
+            np.save(version_dir / f"{horizon}min_{flow}_base.npy", key_means)
+            booster, test = train_one(horizon, flow, frame, val_start, test_start, params, base)
+            del base, key_means
             model_path = version_dir / f"{horizon}min_{flow}.txt"
             booster.booster_.save_model(str(model_path))
             features = feature_columns()
-            model_pred = booster.predict(test[features])
+            model_pred = booster.predict(test[features]) + test.base.to_numpy()
             base_pred = pd.Series(
                 [
                     baselines[flow].get((str(s), int(wd), int(slot)), 0.0)
@@ -296,6 +345,8 @@ def run_training(
         "targets_dir": str(out_dir),
         "feature_columns": feature_columns(),
         "station_codes": station_mapping,
+        "unknown_station_code": int(unknown_code),
+        "base_offset": "per (station, weekday, slot) train mean, additive",
         "params": params,
         "val_days": VAL_DAYS,
         "test_days": TEST_DAYS,

@@ -17,6 +17,7 @@ from contextlib import closing
 from pathlib import Path
 
 import lightgbm as lgb
+import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 
@@ -112,7 +113,17 @@ def create_app(models_dir, data_dir):
     models = load_models(models_dir)
     metadata = json.loads((models_dir / "metadata.json").read_text())
     station_codes = metadata.get("station_codes", {})
-    unknown_code = len(station_codes)
+    # The unknown code is the first index past the trained categories, not the
+    # size of the served mapping: station_codes also carries live-id bridges.
+    unknown_code = metadata.get(
+        "unknown_station_code", max(station_codes.values(), default=-1) + 1
+    )
+    base_tables = {}
+    for horizon in (30, 60):
+        for flow in ("departures", "arrivals"):
+            path = models_dir / f"{horizon}min_{flow}_base.npy"
+            if path.exists():
+                base_tables[(horizon, flow)] = np.load(path)
     db_path = data_dir / "observations.sqlite"
     with closing(connect(db_path)):
         pass  # create the predictions table if absent
@@ -133,7 +144,23 @@ def create_app(models_dir, data_dir):
         frame = build_features(frame, horizon)
         predictions = {}
         for flow in ("departures", "arrivals"):
-            predictions[flow] = models[(horizon, flow)].predict(frame[feature_columns()])
+            raw = models[(horizon, flow)].predict(frame[feature_columns()])
+            table = base_tables.get((horizon, flow))
+            if table is not None:
+                # The booster predicts the correction around the per-key mean,
+                # so the level has to be added back here.
+                slot = (
+                    frame.minute_slot.to_numpy(np.int64) // 30
+                    if horizon == 30
+                    else frame.hour.to_numpy(np.int64)
+                )
+                key = (
+                    frame.station_code.to_numpy(np.int64) * 336
+                    + frame.weekday.to_numpy(np.int64) * 48
+                    + slot
+                )
+                raw = raw + table[key]
+            predictions[flow] = raw
         issued = utc_now()
         rows = []
         results = []
