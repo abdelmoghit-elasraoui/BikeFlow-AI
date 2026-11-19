@@ -116,3 +116,45 @@ def test_parquet_counts_match_event_totals(tmp_path):
     assert int(got.departures.sum()) == 1
     assert int(got.arrivals.sum()) == 1
     assert (got.eligible == 1).all()
+
+
+def test_run_session2_end_to_end(tmp_path):
+    """The full pipeline must survive month discovery and baseline scoring.
+
+    No test called run_session2 before the v2 build, so a bad tz-aware cast in
+    month discovery crashed the process only at full scale.
+    """
+    from zipfile import ZipFile
+
+    from bikeflow.session2 import run_session2
+
+    cols = (
+        "ride_id,rideable_type,started_at,ended_at,start_station_name,start_station_id,"
+        "end_station_name,end_station_id,start_lat,start_lng,end_lat,end_lng,member_casual"
+    )
+    trips = tmp_path / "trips"
+    trips.mkdir()
+    rows = []
+    for day in range(1, 29):
+        for hour in (8, 17):
+            rows.append(
+                f"r{day}{hour},classic_bike,2026-01-{day:02d} {hour:02d}:05:00,"
+                f"2026-01-{day:02d} {hour:02d}:25:00,A,A,B,B,40.7,-74,40.71,-74.01,member"
+            )
+    with ZipFile(trips / "202601-citibike-tripdata.zip", "w") as z:
+        z.writestr("t.csv", cols + "\n" + "\n".join(rows) + "\n")
+    mapping = tmp_path / "mapping.csv"
+    mapping.write_text(
+        "gbfs_station_id,trip_station_id,mapping_status\nL1,A,matched\nL2,B,matched\n"
+    )
+    out = tmp_path / "out"
+    result = run_session2(trips, mapping, out, ["202601"])
+    assert [m["archive"] for m in result["manifest"]["months"]] == [
+        "202601-citibike-tripdata.zip"
+    ]
+    assert result["manifest"]["stations"] == 2
+    targets = sorted((out / "targets_30min").rglob("*.parquet"))
+    assert len(targets) == 1
+    frame = pd.read_parquet(targets[0])
+    assert int(frame.departures.sum()) == len(rows)
+    assert (out / "baseline_v0.json").exists()

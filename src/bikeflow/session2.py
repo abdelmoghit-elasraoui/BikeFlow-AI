@@ -489,14 +489,11 @@ def run_session2(trips_dir, mapping_path, out_dir, months):
     for frame in month_frames.values():
         if frame.empty:
             continue
-        stamps = np.unique(frame.window.to_numpy().astype("datetime64[M]"))
-        for stamp in stamps:
-            month_tags.add(
-                (
-                    int(stamp.astype("datetime64[Y]").astype("int64")) + 1970,
-                    int(stamp.astype("int64")) % 12 + 1,
-                )
-            )
+        # Integer month codes: tz-aware .to_numpy() yields objects, and
+        # casting that straight to datetime64[M] crashes the interpreter.
+        naive = pd.DatetimeIndex(frame.window).tz_convert("UTC").tz_localize(None)
+        for code in np.unique(naive.values.astype("datetime64[M]").astype("int64")):
+            month_tags.add((int(code) // 12 + 1970, int(code) % 12 + 1))
     month_tags = sorted(month_tags)
     for horizon in (30, 60):
         for year, month in month_tags:
