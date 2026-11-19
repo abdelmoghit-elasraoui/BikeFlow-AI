@@ -46,7 +46,10 @@ def load_targets(out_dir, horizon):
         path, columns=["station_id", "window_start_utc", "departures", "arrivals"]
     )
     frame["station_id"] = frame.station_id.astype("string")
-    return frame.sort_values(["station_id", "window_start_utc"]).reset_index(drop=True)
+    # No sort: the split is chronological by mask, every aggregation is
+    # order-independent, and Parquet read order is already deterministic. At
+    # 13 months a station-string sort copies ~40M rows for no benefit.
+    return frame.reset_index(drop=True)
 
 
 def add_features(frame):
