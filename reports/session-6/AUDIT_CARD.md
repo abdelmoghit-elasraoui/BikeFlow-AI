@@ -243,10 +243,10 @@ bikeflow serve --version v2
    prediction time — no leakage of later observations. The measured reason this
    is next: 60-minute models have only 0.53% calendar headroom left, and the
    afternoon peak is where the calendar model stops.
-3. **Live-state correction.** Built and gated: features, trainer, CLI and
-   serving path exist in `src/bikeflow/live.py`. It cannot be fitted yet because
-   the snapshot archive starts 12 November and trips end 31 October. The
-   November archive unlocks it; `enabled` is decided on a chronological holdout.
+3. **Live-state correction.** Trained on the October overlap and deployed
+   disabled: it wins its holdout but the gain is a seasonal level fix that
+   reverses in November, proven by an ablation and a snapshot-flow proxy.
+   Re-gated when November labels arrive.
 4. **React dashboard.** Station map, normal/warning/critical states, both
    horizons, ranked queue, station detail, freshness, and a recorded replay so
    the demo survives a feed outage.
@@ -275,7 +275,7 @@ both an accepted and a rejected candidate.
 | Why is `v2` only +1.8% when `v1` was +13.8%? | The baseline got much better, not the model worse. Three months gave ~8 samples per (station, weekday, slot) key; thirteen months gives ~58. The comparison is not head to head — different baseline, different test window. |
 | Why doesn't `v2` beat the baseline at 60 minutes? | Because there is nothing left in calendar features at that aggregation. The per-key median — the best any calendar-only lookup can do — offers 0.53% headroom at 60 minutes, against 2.79% at 30. Best iteration is 61 of 600, so early stopping fires: the trees find no signal beyond the offset. Weather is the next feature that can move it. |
 | Where does the model actually win? | +3.2% on weekends, +2.3% on the quiet 90% of stations, +11% overnight, and **nothing at the 15:00–18:00 peak**. The edge is where the baseline is noisiest, not where dispatch needs it most. Stated in the report with the slice table. |
-| Why not add live inventory features now? | Built and gated, not trainable yet: the snapshot archive starts 12 November and the trip archive ends 31 October, so no window has both a label and a snapshot. November trips publish in early December; the trainer then runs and the gate decides whether it serves. |
+| Did you try live inventory features? | Yes. The migrated snapshots were on a second disk, and the October overlap gave 871k labelled rows. On its holdout the correction looked excellent: +7.8%/+8.5% at 30 minutes, +12%/+13% at 60. Two checks before enabling: an ablation showed the gain is a level recalibration, not the state; a snapshot-flow proxy showed the calendar already over-predicts November by 16.5% and the blend would push it to 31.5%. It is deployed **disabled**, and the reason is written in `live_metrics.json`. |
 | Overfitting? | Early stopping on a 14-day validation block, best iteration 72–75 of 600 in `v1` and 61–71 of 600 at 60 minutes in `v2`, test touched once, station encoding fit on train only, offset table computed strictly before validation. |
 | Is `warning_score` calibrated? | No, and the report says so. It ranks; it is not a probability. Calibration only matters once we move to expected-cost decisions. |
 | How would you detect drift? | Every forecast is stored with its target window, so once trips land we can join and compute rolling MAE. Prediction distribution and station-set changes are cheap early signals. The logging exists; the scorer is Sprint 2/3. |

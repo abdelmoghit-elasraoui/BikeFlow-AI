@@ -179,7 +179,7 @@ def build_live_features(data_dir, start, end, horizon, station_codes):
 
 
 def _calendar_prediction(frame, models_dir, horizon, flow):
-    """The deployed calendar forecast, booster plus per-key offset."""
+    """The deployed calendar forecast (booster plus offset) and the offset alone."""
     booster = lgb.Booster(model_file=str(Path(models_dir) / f"{horizon}min_{flow}.txt"))
     table = np.load(Path(models_dir) / f"{horizon}min_{flow}_base.npy")
     slot = (
@@ -191,7 +191,8 @@ def _calendar_prediction(frame, models_dir, horizon, flow):
     raw = booster.predict(frame[feature_columns()])
     # Unseen stations have no key of their own; the table's tail holds the
     # global mean, and the index is clamped for the same reason.
-    return raw + table[np.minimum(key, len(table) - 1)]
+    base = table[np.minimum(key, len(table) - 1)]
+    return raw + base, base
 
 
 def train_live_correction(
@@ -238,7 +239,9 @@ def train_live_correction(
             "then this model cannot be fitted on real targets."
         )
     merged = add_features(merged.copy())
-    merged["calendar"] = _calendar_prediction(merged, version_dir, horizon, flow)
+    merged["calendar"], merged["baseline"] = _calendar_prediction(
+        merged, version_dir, horizon, flow
+    )
     merged = merged.sort_values("window_start_utc").reset_index(drop=True)
 
     windows = np.sort(merged.window_start_utc.unique())
@@ -274,6 +277,7 @@ def train_live_correction(
         settings.update(params)
     truth = merged[flow].to_numpy(np.float64)
     calendar = merged.calendar.to_numpy(np.float64)
+    baseline = merged.baseline.to_numpy(np.float64)
     booster = lgb.LGBMRegressor(**settings)
     booster.fit(
         merged.loc[train_mask, CORRECTION_FEATURES],
@@ -290,10 +294,18 @@ def train_live_correction(
     )
     correction = booster.predict(merged.loc[val_mask, CORRECTION_FEATURES])
     blended = calendar[val_mask] + correction
+    per_window = pd.DataFrame(
+        {
+            "window": merged.loc[val_mask, "window_start_utc"].to_numpy(),
+            "calendar_err": np.abs(calendar[val_mask] - truth[val_mask]),
+            "blended_err": np.abs(blended - truth[val_mask]),
+        }
+    ).groupby("window")[["calendar_err", "blended_err"]].mean()
     comparison = {
         "rows": int(val_mask.sum()),
         "windows": int(merged.loc[val_mask, "window_start_utc"].nunique()),
         "validation_start": str(pd.Timestamp(validation_start)),
+        "mae_baseline": float(np.abs(baseline[val_mask] - truth[val_mask]).mean()),
         "mae_calendar": float(np.abs(calendar[val_mask] - truth[val_mask]).mean()),
         "mae_blended": float(np.abs(blended - truth[val_mask]).mean()),
         "bias_calendar": float((calendar[val_mask] - truth[val_mask]).mean()),
@@ -305,12 +317,17 @@ def train_live_correction(
         else None
     )
     comparison["enabled"] = bool(comparison["mae_blended"] < comparison["mae_calendar"])
+    comparison["windows_improved_pct"] = float(
+        (per_window.blended_err < per_window.calendar_err).mean() * 100
+    )
     gain = (
         "n/a" if comparison["improvement_pct"] is None else f"{comparison['improvement_pct']:+.2f}%"
     )
     log(
-        f"Live {horizon}min {flow}: MAE calendar {comparison['mae_calendar']:.4f} -> "
-        f"blended {comparison['mae_blended']:.4f} ({gain}), "
+        f"Live {horizon}min {flow}: MAE baseline {comparison['mae_baseline']:.4f}, "
+        f"calendar {comparison['mae_calendar']:.4f} -> blended "
+        f"{comparison['mae_blended']:.4f} ({gain}), "
+        f"{comparison['windows_improved_pct']:.0f}% of windows better, "
         f"{'enabled' if comparison['enabled'] else 'disabled'}"
     )
 

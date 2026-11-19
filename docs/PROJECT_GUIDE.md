@@ -783,11 +783,14 @@ resolved. Commit hashes refer to the `main` branch.
 - Three serving/scale bugs fixed: silent `datetime64[M]` crash, offset table
   sized below the unseen station code (live HTTP 500), and `unknown_station_code`
   confused with the bridge-table length.
-- Live-state correction pipeline added (`live-features`, `train-live`, gated
-  serving). It cannot be fitted yet: snapshots start 12 November, trips end 31
-  October.
-- Found while building it: 19,312 indexed polls from 16 October-11 November have
-  no raw file after the host moves. Recorded as issue 29.
+- Live-state correction trained on the recovered October overlap (871k labelled
+  rows): +7.8%/+8.5% at 30 minutes and +12.1%/+12.6% at 60 on its chronological
+  holdout. Deployed **disabled**: the gain is a seasonal level fix that reverses
+  in November, shown by an ablation and a snapshot-flow proxy (+16.5% calendar
+  bias in November, +31.5% blended). Re-gated when November labels exist.
+- Migrated snapshots found on `/data` (separate disk) and merged into the live
+  archive: 29,412 of 29,437 indexed polls present, 5.8GB. 112 truncated files
+  from the 24 October outage fall back to the previous intact poll.
 - `v2` deployed; 24 tests. Report: `reports/sprint2/REPORT.md`.
 
 ### 11.2 Issue register
@@ -822,7 +825,7 @@ resolved. Commit hashes refer to the `main` branch.
 | 26 | `session2` died silently mid-build at 13-month scale | Casting a tz-aware object array to `datetime64[M]` is undefined; the process exited without a traceback | Integer month codes from a UTC-naive index; end-to-end regression test |
 | 27 | `v2` `/queue` returned HTTP 500: `index 715835 is out of bounds` | Offset table sized by `max(station_code)`, but unseen stations map to `max + 1` | Size at the unseen code inclusive, fill unseen keys with the global mean, pad short tables on load |
 | 28 | Unseen stations scored as a category that does not exist | `len(station_codes)` used as the unknown code, but the mapping also carries live-ID bridges (4,260 vs 2,130) | `unknown_station_code` stored in metadata; test covers the unseen-station path |
-| 29 | 19,312 indexed polls have no raw file | Retired hosts were not copied fully before shutdown: 29,419 polls indexed from 16 October, 10,107 raw files present from 12 November | Nothing in Sprint 2 deleted them; archive restarts 12 November. Object storage and a post-migration checksum gate are Sprint 4 |
+| 29 | Archive appeared to be missing 19,312 polls | The migrated snapshots sit on `/data`, a separate 100GB disk that the first audit skipped (`find -xdev`); the live collector writes to `/srv/bikeflow/data/raw` | Merged into one archive: 29,412 of 29,437 indexed polls present, 5.8GB. 112 files truncated by the 24 October outage; the live feature builder falls back to the previous intact poll |
 
 ### 11.3 Features delivered
 
@@ -851,15 +854,15 @@ resolved. Commit hashes refer to the `main` branch.
 
 ### 11.4 Current status (19 November 2026)
 
-- Collector: active on the Sydney host, one poll per minute, 10,107 raw
-  snapshots (2.0GB) from 12 November, 2,519 live stations.
+- Collector: active on the Sydney host, one poll per minute, 29,544 raw
+  snapshots (5.8GB) from 16 October, 2,519 live stations.
 - API: active, snapshot age under 60s, model `v2`.
-- Database: 18MB (polls, errors, predictions). Note: 19,312 indexed polls from
-  16 October-11 November have no raw file; see issue 29.
-- Raw archive: 2.0GB, no deletion policy.
+- Database: 18MB (polls, errors, predictions). 29,412 of 29,437 indexed polls
+  resolve to a raw file; 112 are truncated (issue 29).
+- Raw archive: 5.8GB, no deletion policy.
 - Models: `v1` (3 months) retained for reference; `v2` (13 months, 50.5M trips)
-  deployed and serving. The live-state correction is implemented and gated,
-  waiting for the November trip archive.
+  deployed and serving. The live-state correction is trained and deployed but
+  disabled by its gate.
 - Sprint 1: complete with a recorded scope change. Sprint 2: 13-month retrain
   done; dashboard, weather, PostgreSQL and prediction retention still open.
 - Known growth item: `predictions` grows ~2,500 rows per `/queue` call; retention

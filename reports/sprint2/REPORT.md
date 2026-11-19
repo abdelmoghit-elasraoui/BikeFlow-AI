@@ -200,33 +200,58 @@ boolean masks over one frame instead of three copies, station encoding is done
 per horizon and released before the next load, and the dataset hash is updated
 per column.
 
-## Live-state correction: built, gated, waiting for labels
+## Live-state correction: trained, measured, disabled
 
-The next model in the plan is an additive correction that sees the station's
-current state. It is implemented — `src/bikeflow/live.py`, the
+The additive correction is implemented — `src/bikeflow/live.py`, the
 `live-features` and `train-live` commands, and a serving path that loads a
-correction only when it is enabled — but it cannot be trained yet: **the
-snapshot archive starts on 2026-11-12 and the trip archive ends on 2026-10-31,
-so no window has both a label and a snapshot.** The trainer exits with that
-reason rather than fitting on nothing.
+correction only when it is enabled. The migrated snapshot archive was found on
+the secondary disk (`/data/gbfs`), merged into the live archive, and the overlap
+with the trip archive turned out to be 16–24 October: 871,170 labelled rows at
+30 minutes and 434,520 at 60.
 
-Two consequences:
+On its chronological holdout it looks excellent:
 
-- The feature side is ready and tested against synthetic polls. The label join
-  is one command once the November trip archive is published (early December
-  2026).
-- The promotion gate is part of the artifact. The correction is written either
-  way, but `enabled` is only true when the blend beats the calendar forecast on
-  a chronological holdout inside the overlap. Serving reads that flag, so a
-  losing candidate cannot reach production.
+| Horizon | Flow | Baseline | Calendar | Blended | Change |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 30 min | departures | 0.892 | 0.871 | 0.804 | +7.8% |
+| 30 min | arrivals | 0.894 | 0.874 | 0.799 | +8.5% |
+| 60 min | departures | 1.416 | 1.407 | 1.237 | +12.1% |
+| 60 min | arrivals | 1.424 | 1.415 | 1.237 | +12.6% |
 
-**Data gap found while building this.** The `polls` table indexes 29,419 polls
-from 2026-10-16, but only 10,107 raw files are present, all from 2026-11-12
-onward. The 19,312 poll files from 16-24 October and 4-11 November are missing:
-the two hosts that collected them are stopped and refuse connections, and no
-copy exists on the server or on the laptop. Nothing in this sprint deleted them.
-The effect is that the only period that could have overlapped the trip archive
-— 16-24 October — is exactly the period whose raw files are gone.
+Every validation window improved. That is too uniform to be state information,
+so two checks were run before enabling it.
+
+**Ablation (30-minute departures).** Training on the forecast level alone
+(`calendar`, station, hour) gives +7.1%; training on live state without the
+forecast level gives +4.0% on 74% of windows, and much of that is still a
+station/hour level term. The gain is mostly a recalibration of the calendar
+model, not the state.
+
+**Direction check.** Flows were inferred from consecutive snapshots — a one-bike
+step is a trip, multi-bike jumps are rebalancing — and calibrated on October,
+where the proxy captures 67.9% of labelled departures. Applied to 12–19 November:
+
+| Estimate | Trips per window | vs estimated truth |
+| --- | ---: | ---: |
+| Snapshot proxy × calibration | 0.846 | — |
+| Calendar model | 0.986 | +16.5% |
+| Blended | 1.113 | +31.5% |
+
+The calendar model under-predicts October by 30.6% and over-predicts November by
+16.5%: late October sits above the annual mean and November below it. The
+correction learned the October direction, so **it would make November worse**.
+The four artifacts are deployed but disabled in `live_metrics.json`, with that
+reason recorded in the file. The November trip archive provides the labels that
+make the correction transferable; until then the gate stays closed.
+
+This is the promotion gate doing its job, and it is the argument for evaluating
+on rolling windows rather than one seasonal block.
+
+**Archive recovery.** The migrated snapshots were on `/data`, a separate disk
+that the first audit did not scan. After merging: 29,412 of 29,437 indexed polls
+have their raw file. 112 polls from the 24 October disk-full outage are
+truncated past repair; the feature builder falls back to the previous intact
+poll and reports how many it skipped.
 
 ## Limitations
 
@@ -246,9 +271,9 @@ The effect is that the only period that could have overlapped the trip archive
 - **The gain is concentrated off-peak.** At the afternoon peak the model and
   the baseline are indistinguishable. Reported in the slice table above, not
   hidden behind the headline MAE.
-- **No live-state correction yet.** The snapshot archive starts after the last
-  labelled trip day, and the raw files that would have overlapped it are
-  missing.
+- **The live-state correction is disabled.** It wins on its October holdout but
+  the gain is a seasonal level fix that reverses in November. Reported with the
+  ablation and the proxy check, and re-gated when November labels arrive.
 - **The baseline is a mean, so it is also mis-specified for MAE.** The
   comparison is fair in construction but neither side is optimal.
 
@@ -259,10 +284,11 @@ The effect is that the only period that could have overlapped the trip archive
 2. Per-key median offset, then re-measure: it bounds what calendar features can
    deliver at 60 minutes.
 3. Raise the tree cap for the 30-minute models and stop on validation.
-4. Train the live-state correction when the November trip archive lands:
+4. Re-run the live-state correction when the November trip archive lands:
    `bikeflow live-features --start 2026-11-12 --end 2026-12-01 --horizon 30 --out data/processed/live_30min.parquet`
-   then `bikeflow train-live --live data/processed/live_30min.parquet`, and let
-   the gate decide whether it serves.
+   then `bikeflow train-live --live data/processed/live_30min.parquet`. It is
+   deployed disabled because the October gain is a seasonal level fix; November
+   labels are what make it transferable.
 5. Move to rolling-origin backtesting: the current 14-day window contains no
    holiday and cannot resolve a 0.5% difference.
 6. Predictions retention and deduplication, then PostgreSQL behind the storage

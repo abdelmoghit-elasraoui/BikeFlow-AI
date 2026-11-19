@@ -185,9 +185,14 @@ The correction is additive on top of the calendar forecast and sees the
 station's current bikes, docks, capacity, ratios and renting flag. It is only
 loaded by the API when `live_metrics.json` marks it `enabled`, which happens
 only if the blend beats the calendar forecast on a chronological holdout inside
-the overlap. The snapshot archive (from 2026-11-12) and the trip archive (to
-2026-10-31) do not overlap yet, so `train-live` exits with that reason instead
-of fitting on nothing.
+the overlap.
+
+The migrated snapshots on the host's second disk (`/data/gbfs`) overlap the trip
+archive on 16-24 October, which is enough to train and test the correction. On
+that holdout it improves every flow by 7.8-12.6%, but it is deployed
+**disabled**: an ablation and a snapshot-flow proxy show the gain is a seasonal
+level recalibration that would push November forecasts further above an already
+high calendar forecast. The November trip archive is what makes it transferable.
 
 
 
