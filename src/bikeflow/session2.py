@@ -270,13 +270,19 @@ def _span_days(spans, start_bound=None, end_bound=None):
     return out
 
 
-def train_key_means(events, spans, test_start, horizon):
+def train_key_means(events, spans, test_start, horizon, columns=("station", "window", "n")):
     """Mean trips per (station, weekday, slot) over eligible train windows.
 
     Empty-but-eligible windows count as genuine zeros via span arithmetic:
     every slot occurs exactly once per day, so eligible windows per key =
     number of train days in the station span with that weekday.
+
+    ``columns`` lets callers point at differently named columns instead of
+    copying a large frame just to rename them. Day filtering uses integer
+    ordinals; materialising date strings for tens of millions of rows cost
+    several gigabytes during the v2 build.
     """
+    station_col, window_col, n_col = columns
     slot = f"slot_{horizon}"
     n_slots = 24 * 60 // horizon
     log(f"Baseline-train {horizon}min: aggregating event totals")
@@ -289,24 +295,44 @@ def train_key_means(events, spans, test_start, horizon):
         }
     )
     if not events.empty:
-        train = events.copy()
-        train["day"] = train.window.dt.date.astype("string")
-        train = train[train["day"] < test_start]
-        span_frame = pd.DataFrame(
-            [{"station": s, "first": f, "last": la} for s, (f, la) in spans.items()]
+        window = events[window_col]
+        index = pd.DatetimeIndex(window)
+        if index.tz is not None:
+            index = index.tz_convert("UTC").tz_localize(None)
+        window_ns = index.to_numpy()
+        mask = window_ns < pd.Timestamp(test_start).to_datetime64()
+        codes, uniques = pd.factorize(events[station_col], sort=False)
+        first_ord = np.fromiter(
+            (
+                pd.Timestamp(spans[str(s)][0]).to_datetime64().astype("datetime64[D]").astype("int64")
+                if str(s) in spans
+                else -1
+                for s in uniques
+            ),
+            dtype="int64",
+            count=len(uniques),
         )
-        span_frame["station"] = span_frame.station.astype("string")
-        train = train.merge(span_frame, on="station")
-        train = train[(train["day"] >= train["first"]) & (train["day"] <= train["last"])]
-        if not train.empty:
-            keys = nyc_keys(pd.DatetimeIndex(train.window))
+        last_ord = np.fromiter(
+            (
+                pd.Timestamp(spans[str(s)][1]).to_datetime64().astype("datetime64[D]").astype("int64")
+                if str(s) in spans
+                else -1
+                for s in uniques
+            ),
+            dtype="int64",
+            count=len(uniques),
+        )
+        day_ord = window_ns.astype("datetime64[D]").astype("int64")
+        mask &= (day_ord >= first_ord[codes]) & (day_ord <= last_ord[codes])
+        if mask.any():
+            keys = nyc_keys(pd.DatetimeIndex(window[mask]))
             totals = (
                 pd.DataFrame(
                     {
-                        "station": train.station.values,
+                        "station": events[station_col][mask],
                         "weekday": keys.weekday.values,
                         slot: keys[slot].values,
-                        "total": train.n.values,
+                        "total": events[n_col].to_numpy()[mask],
                     }
                 )
                 .groupby(["station", "weekday", slot], observed=True)
@@ -425,14 +451,25 @@ def run_session2(trips_dir, mapping_path, out_dir, months):
                 }
             )
         )
+        combined[key] = []  # release per-month frames after the concat
     global_max = max(last for _, last in spans.values())
     manifest["test_start"] = split_day(global_max)
     pd.DataFrame(
         [{"station_id": s, "first_day": f, "last_day": la} for s, (f, la) in sorted(spans.items())]
     ).to_csv(out_dir / "station_spans.csv", index=False)
-    month_tags = sorted(
-        {(w.year, w.month) for frame in month_frames.values() for w in frame.window}
-    )
+    month_tags = set()
+    for frame in month_frames.values():
+        if frame.empty:
+            continue
+        stamps = np.unique(frame.window.to_numpy().astype("datetime64[M]"))
+        for stamp in stamps:
+            month_tags.add(
+                (
+                    int(stamp.astype("datetime64[Y]").astype("int64")) + 1970,
+                    int(stamp.astype("int64")) % 12 + 1,
+                )
+            )
+    month_tags = sorted(month_tags)
     for horizon in (30, 60):
         for year, month in month_tags:
             part_dir = out_dir / f"targets_{horizon}min" / f"year={year}" / f"month={month:02d}"

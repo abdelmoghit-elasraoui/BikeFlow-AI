@@ -83,28 +83,43 @@ def encode_stations(train, others):
     return mapping, unknown
 
 
-def train_one(horizon, flow, frame, val_start, test_start, params, version_dir):
-    target = flow
-    train = frame[frame.window_start_utc < pd.Timestamp(val_start, tz="UTC")].copy()
-    val = frame[
-        (frame.window_start_utc >= pd.Timestamp(val_start, tz="UTC"))
-        & (frame.window_start_utc < pd.Timestamp(test_start, tz="UTC"))
-    ].copy()
-    test = frame[frame.window_start_utc >= pd.Timestamp(test_start, tz="UTC")].copy()
-    log(f"Model {horizon}min {flow}: train {len(train):,} | val {len(val):,} | test {len(test):,}")
-    mapping, unknown = encode_stations(train, [val, test])
+def utc_naive(values):
+    """Naive UTC numpy datetimes; tz-aware Series.to_numpy() returns objects."""
+    index = pd.DatetimeIndex(values)
+    if index.tz is not None:
+        index = index.tz_convert("UTC").tz_localize(None)
+    return index.to_numpy()
+
+
+def train_one(horizon, flow, frame, val_start, test_start, params):
+    """Fit one pooled model, slicing features instead of copying the frame.
+
+    The 13-month build holds ~38M rows; three full-frame copies (train, val,
+    test) plus LightGBM's own conversion do not fit in 8GB of RAM.
+    """
     features = feature_columns()
+    val_ts = pd.Timestamp(val_start).to_datetime64()
+    test_ts = pd.Timestamp(test_start).to_datetime64()
+    windows = utc_naive(frame.window_start_utc)
+    train_mask = windows < val_ts
+    val_mask = (windows >= val_ts) & (windows < test_ts)
+    test_mask = windows >= test_ts
+    log(
+        f"Model {horizon}min {flow}: train {int(train_mask.sum()):,} | "
+        f"val {int(val_mask.sum()):,} | test {int(test_mask.sum()):,}"
+    )
     booster = lgb.LGBMRegressor(**params)
     booster.fit(
-        train[features],
-        train[target],
-        eval_set=[(val[features], val[target])],
+        frame.loc[train_mask, features],
+        frame.loc[train_mask, flow],
+        eval_set=[(frame.loc[val_mask, features], frame.loc[val_mask, flow])],
         eval_metric="l1",
         categorical_feature=["station_code"],
         callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)],
     )
     log(f"Model {horizon}min {flow}: best_iteration {booster.best_iteration_}")
-    return booster, test, mapping, unknown
+    test = frame.loc[test_mask, ["station_id", *features, flow]].copy()
+    return booster, test
 
 
 def baseline_means_for_test(frame, horizon, test_start):
@@ -112,8 +127,10 @@ def baseline_means_for_test(frame, horizon, test_start):
 
     Delegates to Session 2's train_key_means so the comparison is
     apples-to-apples: identical rows, identical eligibility arithmetic.
+    The targets frame already holds one row per (station, window), so the
+    old groupby-sum was a no-op that copied the whole frame; columns are
+    passed by name instead.
     """
-    events = frame.rename(columns={"departures": "dep", "arrivals": "arr"})
     spans_frame = (
         frame.groupby("station_id", observed=True)
         .agg(first=("window_start_utc", "min"), last=("window_start_utc", "max"))
@@ -124,14 +141,14 @@ def baseline_means_for_test(frame, horizon, test_start):
         for row in spans_frame.itertuples()
     }
     result = {}
-    for flow, key in (("departures", "dep"), ("arrivals", "arr")):
-        events_frame = (
-            events.groupby(["station_id", "window_start_utc"], observed=True)[key]
-            .sum()
-            .reset_index()
+    for flow, key in (("departures", "departures"), ("arrivals", "arrivals")):
+        result[flow] = train_key_means(
+            frame,
+            span_map,
+            test_start,
+            horizon,
+            columns=("station_id", "window_start_utc", key),
         )
-        events_frame.columns = ["station", "window", "n"]
-        result[flow] = train_key_means(events_frame, span_map, test_start, horizon)
         log(f"Baseline {horizon}min {flow}: {len(result[flow]):,} keys")
     return result, span_map
 
@@ -196,21 +213,31 @@ def run_training(
         test_start = (last - timedelta(days=TEST_DAYS - 1)).date().isoformat()
         val_start = (pd.Timestamp(test_start) - timedelta(days=VAL_DAYS)).date().isoformat()
         log(f"Model {horizon}min: val_start {val_start}, test_start {test_start}")
-        baselines, spans = baseline_means_for_test(frame, horizon, test_start)
+        baselines, _ = baseline_means_for_test(frame, horizon, test_start)
+        train_mask = (
+            utc_naive(frame.window_start_utc) < pd.Timestamp(val_start).to_datetime64()
+        )
+        log(f"Model {horizon}min: fitting station codes on {int(train_mask.sum()):,} train rows")
+        # Encoding depends only on the station column, so it is fitted once per
+        # horizon instead of once per flow.
+        mapping, unknown = encode_stations(
+            frame.loc[train_mask, ["station_id"]], [frame]
+        )
+        station_mapping.update({k: int(v) for k, v in mapping.items()})
+        bridged = {
+            live: int(mapping[trip]) for live, trip in live_to_trip.items() if trip in mapping
+        }
+        station_mapping.update(bridged)
+        log(
+            f"Model {horizon}min: {len(mapping):,} station codes, "
+            f"{len(bridged):,} live ids bridged"
+        )
         horizon_metrics = {"val_start": val_start, "test_start": test_start, "flows": {}}
         for flow in FLOWS:
             log(f"Model {horizon}min {flow}: training")
-            booster, test, mapping, unknown = train_one(
-                horizon, flow, frame, val_start, test_start, params, version_dir
-            )
+            booster, test = train_one(horizon, flow, frame, val_start, test_start, params)
             model_path = version_dir / f"{horizon}min_{flow}.txt"
             booster.booster_.save_model(str(model_path))
-            station_mapping.update({k: int(v) for k, v in mapping.items()})
-            bridged = {
-                live: int(mapping[trip]) for live, trip in live_to_trip.items() if trip in mapping
-            }
-            station_mapping.update(bridged)
-            log(f"Model {horizon}min {flow}: bridged {len(bridged):,} live ids")
             features = feature_columns()
             model_pred = booster.predict(test[features])
             base_pred = pd.Series(
@@ -227,7 +254,10 @@ def run_training(
             model_mae = mae(model_pred, truth)
             base_mae = mae(base_pred, truth)
             busy_ids = (
-                frame[frame.window_start_utc < pd.Timestamp(test_start, tz="UTC")]
+                frame.loc[
+                    utc_naive(frame.window_start_utc) < pd.Timestamp(test_start).to_datetime64(),
+                    ["station_id", flow],
+                ]
                 .groupby("station_id", observed=True)[flow]
                 .sum()
                 .nlargest(50)

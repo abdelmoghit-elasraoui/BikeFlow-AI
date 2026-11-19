@@ -32,6 +32,12 @@ def main():
     train = sub.add_parser("train", help="Train pooled LightGBM models and compare to baseline")
     train.add_argument("--version", default="v1")
     train.add_argument("--targets", type=Path, default=Path("data/processed/session2"))
+    train.add_argument(
+        "--months",
+        nargs="+",
+        default=["202512", "202601", "202602"],
+        help="month tags recorded in metadata (defaults to the Sprint 1 slice)",
+    )
     train.add_argument("--models", type=Path, default=Path("data/models"))
     train.add_argument(
         "--mapping",
@@ -74,7 +80,7 @@ def main():
 
         print(
             json.dumps(
-                run_training(args.targets, args.models, args.version, args.mapping),
+                run_training(args.targets, args.models, args.version, args.mapping, args.months),
                 indent=2,
                 default=str,
             )
