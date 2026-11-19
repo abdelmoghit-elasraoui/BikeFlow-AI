@@ -143,6 +143,19 @@ def test_build_live_features_rejects_an_empty_range(tmp_path):
     assert list_polls(tmp_path, "2026-01-01", "2026-01-02") == []
 
 
+def test_build_live_features_falls_back_from_a_truncated_poll(tmp_path):
+    """The migrated archive has files cut short by the October disk-full outage."""
+    data_dir = tmp_path / "data"
+    write_polls(data_dir, "2026-01-01", days=1)
+    day = data_dir / "raw" / "gbfs" / "2026" / "01" / "01"
+    broken = day / "20260101T100000000000Z-test.json.gz"
+    broken.write_bytes(b"not a complete gzip stream")
+    frame = build_live_features(data_dir, "2026-01-01", "2026-01-02", 30, {"a": 0, "b": 1})
+    window = pd.Timestamp("2026-01-01 10:00", tz="UTC")
+    assert (frame.window_start_utc == window).any()
+    assert frame[frame.window_start_utc == window].bikes.notna().all()
+
+
 def test_train_live_correction_fits_and_gates(tiny_dataset, tmp_path):
     models = tmp_path / "models"
     run_training(tiny_dataset, models, "vlive", months=("tiny",))

@@ -86,7 +86,9 @@ def build_live_features(data_dir, start, end, horizon, station_codes):
     """One row per (station code, window): the last snapshot before the window.
 
     This is the same information the API has at issue time, which is what makes
-    the correction trainable and servable from one definition.
+    the correction trainable and servable from one definition. A truncated poll
+    is skipped in favour of the previous intact one: the migrated archive has
+    files cut short by the October disk-full outage.
     """
     polls = list_polls(data_dir, start, end)
     if not polls:
@@ -120,8 +122,21 @@ def build_live_features(data_dir, start, end, horizon, station_codes):
         "is_renting": [],
     }
     unusable = 0
+    corrupt = 0
     for number, (index, assigned) in enumerate(sorted(chosen.items()), 1):
-        capacity, rows = parse_poll(polls[index][1])
+        capacity, rows = {}, None
+        for attempt in range(5):
+            candidate = index - attempt
+            if candidate < 0:
+                break
+            try:
+                capacity, rows = parse_poll(polls[candidate][1])
+                break
+            except (OSError, EOFError, ValueError):
+                corrupt += 1
+        if rows is None:
+            log(f"Live: no intact poll for {assigned[0]}, window dropped")
+            continue
         for station in rows:
             code = station_codes.get(station["station_id"])
             if code is None:
@@ -156,7 +171,8 @@ def build_live_features(data_dir, start, end, horizon, station_codes):
     frame["window_start_utc"] = pd.to_datetime(frame.window_start_utc, utc=True)
     log(
         f"Live: {len(frame):,} rows, {frame.station_code.nunique():,} stations, "
-        f"{frame.window_start_utc.nunique():,} windows, {unusable:,} unmapped states"
+        f"{frame.window_start_utc.nunique():,} windows, {unusable:,} unmapped states, "
+        f"{corrupt:,} corrupt polls skipped"
     )
     return frame.sort_values(["station_code", "window_start_utc"]).reset_index(drop=True)
 
