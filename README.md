@@ -142,7 +142,35 @@ contain evidence (local-only, not pushed to GitHub).
 and departure bins for twenty busiest verified stations. It is a diagnostic,
 not a complete training dataset: absent bins are not automatically zero-filled,
 historical station operating history is unknown, and ride IDs are not deduplicated.
-Forecasting, weather joins, FastAPI, and the dashboard belong to later sessions.
+
+## Sprint 2: 13-month retrain (`v2`)
+
+```sh
+# Build 13 months of targets (Oct 2025-Oct 2026) into a separate directory:
+uv run bikeflow session2 --months 202510 202511 202512 202601 202602 202603 202604 202605 202606 202607 202608 202609 202610
+
+# Train into the same targets, new version directory:
+uv run bikeflow train --version v2 --targets data/processed/v2 --months 202510 202511 202512 202601 202602 202603 202604 202605 202606 202607 202608 202609 202610
+```
+
+`v1` and `data/processed/session2/` are left untouched, so the Sprint 1
+artifacts stay reproducible. `v2` adds three things the longer history made
+necessary and possible:
+
+- **L1 objective.** MAE is minimised by the conditional median, so the model
+  is trained with `regression_l1` instead of LightGBM's default L2. Training
+  with L2 while scoring with L1 capped v2 at the per-key mean baseline.
+- **Additive per-key offset.** Each target is centred on the train-only
+  (station, weekday, slot) mean, so 31-leaf trees learn corrections rather
+  than re-deriving a 715k-key lookup table. The table ships as
+  `{horizon}min_{flow}_base.npy` and the API adds it back.
+- **Explicit unknown station code.** `station_codes` also carries live-ID
+  bridges, so its length is not the trained category count. `metadata.json`
+  now records `unknown_station_code` and the offset table covers it.
+
+The split is chronological: train before 2026-10-06, validation 6-19 October,
+untouched test 20 October-2 November.
+
 
 ## Data sources and interpretation
 

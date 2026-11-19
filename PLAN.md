@@ -149,6 +149,14 @@ Carried from Sprint 1 (recorded scope change): extend trips to 12 months,
 introduce PostgreSQL for metadata/snapshots/predictions/evaluations with a
 retention rule, and add the weather join with cached, no-leakage forecast runs.
 
+**Trips extended and model retrained, 19 November 2026.** The window is 13
+calendar months (October 2025-October 2026), not 12: 50,472,470 trips and 2,130
+verified stations, with the untouched test window on 20 October-2 November 2026
+so that it sits a full year after the first training month. Model `v2` is
+trained, evaluated, and deployed. Results, the diagnosis of why the first run
+lost to the baseline, and the remaining limitations are in
+`reports/sprint2/REPORT.md`.
+
 - Compact the observations schema: store bikes/docks/flags/disabled counts as
   integer columns and stop duplicating the full station JSON payload as text
   (keep it compressed or only in the raw archive). Observed scale: 4,147 polls
