@@ -204,11 +204,12 @@ def run_training(
         frame = load_targets(out_dir, horizon)
         frame = add_features(frame)
         log(f"Model {horizon}min: dataset hash update")
-        dataset_hash.update(
-            pd.util.hash_pandas_object(
-                frame[["station_id", "window_start_utc", "departures", "arrivals"]], index=False
-            ).values.tobytes()
-        )
+        # Per column: hashing the 4-column frame at once built a ~1GB copy of
+        # the 13-month table just to fingerprint it.
+        for column in ("station_id", "window_start_utc", "departures", "arrivals"):
+            dataset_hash.update(
+                pd.util.hash_pandas_object(frame[column], index=False).values.tobytes()
+            )
         last = frame.window_start_utc.max()
         test_start = (last - timedelta(days=TEST_DAYS - 1)).date().isoformat()
         val_start = (pd.Timestamp(test_start) - timedelta(days=VAL_DAYS)).date().isoformat()
@@ -281,6 +282,9 @@ def run_training(
                 "model_file": model_path.name,
             }
         metrics["horizons"][f"{horizon}min"] = horizon_metrics
+        # Free this horizon before the next load; keeping both frames alive
+        # doubles peak memory at 13-month scale.
+        del frame, baselines
     metadata = {
         "version": version,
         "generated_at": utc_now(),

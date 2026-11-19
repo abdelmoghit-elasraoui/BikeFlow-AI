@@ -98,10 +98,15 @@ def test_parquet_counts_match_event_totals(tmp_path):
         z.writestr("t.csv", cols + "\n" + trip)
     evidence, events, spans = scan_month(archive, {"A", "B"})
     assert evidence["counts"]["rows"] == 1
+    seen = set()
     for frame in events.values():
         if not frame.empty:
             assert str(frame.window.dtype) == "datetime64[ns, UTC]"
-            assert str(frame.station.dtype) == "string"
+            # Categorical keeps the station column at 2 bytes per row once the
+            # 13 monthly frames are concatenated.
+            assert str(frame.station.dtype) == "category"
+            seen.update(frame.station.astype("string").unique())
+    assert sorted(seen) == ["A", "B"]
     out = tmp_path / "p"
     assert (
         write_month_partition(events[(30, "dep")], events[(30, "arr")], spans, 2026, 1, 30, out)

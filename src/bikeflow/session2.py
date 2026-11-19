@@ -157,7 +157,12 @@ def scan_month(archive, matched):
         total = pd.concat(series_list).groupby(level=[0, 1]).sum()
         frame = total.reset_index()
         frame.columns = ["station", "window", "n"]
-        frame["station"] = frame.station.astype("string")
+        # Categorical with the full matched set as categories: every month gets
+        # an identical dtype, so the 13-month concat stays 2 bytes per station
+        # instead of one 8-byte object pointer + string per row.
+        frame["station"] = frame.station.astype(
+            pd.CategoricalDtype(sorted(matched), ordered=False)
+        )
         # .values above drops tz; these wall times are UTC, so re-localize.
         frame["window"] = pd.DatetimeIndex(frame.window, tz="UTC")
         frame["n"] = frame.n.astype("int32")
@@ -192,14 +197,44 @@ def month_windows(year, month, horizon):
     return pd.date_range(start, end, freq=HORIZONS[horizon], inclusive="left")
 
 
+def month_slice(frame, start, end):
+    """Rows whose window falls in [start, end); empty frame stays empty.
+
+    Compares timestamps directly. The old strftime filter built one Python
+    string per row, which cost ~1.5GB per call at v2 scale and ran twice for
+    every month partition.
+    """
+    if frame.empty:
+        return frame
+    windows = pd.DatetimeIndex(frame.window)
+    return frame.loc[(windows >= start) & (windows < end)]
+
+
 def write_month_partition(events_dep, events_arr, spans, year, month, horizon, out_dir):
     """Zero-fill eligible windows for one month; outside-span stays absent."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     windows = month_windows(year, month, horizon)
-    month_dep = events_dep[events_dep.window.dt.strftime("%Y-%m") == f"{year}-{month:02d}"]
-    month_arr = events_arr[events_arr.window.dt.strftime("%Y-%m") == f"{year}-{month:02d}"]
+    start = pd.Timestamp(year=year, month=month, day=1, tz="UTC")
+    end = start + pd.offsets.MonthBegin(1)
+    month_dep = month_slice(events_dep, start, end)
+    month_arr = month_slice(events_arr, start, end)
+    # Lookups are built once per month, not once per station chunk.
+    if not month_dep.empty:
+        month_dep = month_dep.assign(station=month_dep.station.astype("string"))
+    if not month_arr.empty:
+        month_arr = month_arr.assign(station=month_arr.station.astype("string"))
+    dep_lookup = month_dep.set_index(["station", "window"]).n if not month_dep.empty else None
+    arr_lookup = month_arr.set_index(["station", "window"]).n if not month_arr.empty else None
     stations = sorted(spans)
+    day_begin = np.array(
+        [pd.Timestamp(spans[s][0]).value // 86_400_000_000_000 for s in stations], dtype="int64"
+    )
+    day_end = np.array(
+        [pd.Timestamp(spans[s][1]).value // 86_400_000_000_000 for s in stations], dtype="int64"
+    )
+    # tz-aware .values are UTC-naive, so no per-row conversion is needed.
+    window_day = windows.values.astype("datetime64[D]").astype("int64")
     files = 0
     n_groups = (len(stations) + STATION_CHUNK - 1) // STATION_CHUNK
     for g, i in enumerate(range(0, len(stations), STATION_CHUNK)):
@@ -212,21 +247,14 @@ def write_month_partition(events_dep, events_arr, spans, year, month, horizon, o
             }
         )
         frame["window_start_utc"] = pd.to_datetime(frame.window_start_utc, utc=True)
-        span_frame = pd.DataFrame(
-            {
-                "station_id": group,
-                "first": [spans[s][0] for s in group],
-                "last": [spans[s][1] for s in group],
-            }
+        tiled = np.tile(window_day, len(group))
+        keep = (tiled >= np.repeat(day_begin[i : i + STATION_CHUNK], len(windows))) & (
+            tiled <= np.repeat(day_end[i : i + STATION_CHUNK], len(windows))
         )
-        frame = frame.merge(span_frame, on="station_id")
+        frame = frame.loc[keep]
         frame["station_id"] = frame.station_id.astype("string")
-        days = frame.window_start_utc.dt.date.astype("string")
-        frame = frame[(days >= frame["first"]) & (days <= frame["last"])]
         if frame.empty:
             continue
-        dep_lookup = month_dep.set_index(["station", "window"]).n if not month_dep.empty else None
-        arr_lookup = month_arr.set_index(["station", "window"]).n if not month_arr.empty else None
         keys = pd.MultiIndex.from_arrays([frame.station_id, frame.window_start_utc])
         frame["departures"] = (
             keys.map(dep_lookup).fillna(0).astype("int32")
