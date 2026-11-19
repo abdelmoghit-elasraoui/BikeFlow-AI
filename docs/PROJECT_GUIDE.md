@@ -407,6 +407,23 @@ stopping after 50 rounds without validation improvement. Best iteration was
 `data/models/v2/`: four boosters, four offset tables, `metadata.json`, and
 `metrics.json`.
 
+**Weather (`v3`).** Ten hourly features from Open-Meteo: temperature, apparent
+temperature, precipitation, wind, humidity, cloud cover, snow depth, visibility,
+plus `is_precipitating` and `is_cold`.
+
+- **No leakage.** Training uses the historical forecast API, which serves the
+  forecast that existed at issue time, not a reanalysis of what the weather
+  turned out to be.
+- **Hourly, not 30-minute.** A window reads the forecast for the hour containing
+  its start. At 30 and 60 minutes the difference between 09:05 and 09:35 rain is
+  not information the model can act on.
+- **Serving reads our own archive.** `bikeflow-weather.timer` fetches the live
+  forecast every 30 minutes into `data/weather/live_forecast.parquet`; the API
+  joins it at request time. No external call on the request path, and a missing
+  file leaves the columns empty, which LightGBM handles.
+- `metadata.json` lists the feature columns and the weather source, variables,
+  cache path and a digest of the weather frame.
+
 ### 5.5 Results
 
 Measured on 1,396,464 test windows at 30 min and 698,232 at 60 min, per flow
@@ -433,6 +450,20 @@ baseline estimated from ~58 samples per key in `v2` against ~8 in `v1`. The
 60-minute loss is reported as a loss. The measured reason is that the per-key
 median — the best a calendar-only lookup can do — has 0.53% headroom at 60
 minutes against 2.79% at 30, so the features, not the model, are the limit.
+
+`v3` adds the ten weather features, same split and test rows:
+
+| Horizon | Flow | `v2` | `v3` | Change | Baseline | `v3` vs baseline |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 30 min | departures | 0.879 | 0.877 | −0.3% | 0.896 | +2.1% |
+| 30 min | arrivals | 0.883 | 0.876 | −0.8% | 0.897 | +2.4% |
+| 60 min | departures | 1.471 | 1.425 | −3.2% | 1.468 | +2.9% |
+| 60 min | arrivals | 1.481 | 1.432 | −3.3% | 1.476 | +3.0% |
+
+Weather does almost nothing at 30 minutes, where the calendar already carries
+the signal, and turns 60 minutes from a loss into a win. On the busiest 50
+stations the 60-minute MAE falls from 5.81/5.86 to 5.39 against a 5.74/5.80
+baseline.
 
 Reading the numbers: MAE is the average absolute error in trips per station per
 window. Lower is better. The model beats the baseline on every horizon, every
@@ -791,7 +822,11 @@ resolved. Commit hashes refer to the `main` branch.
 - Migrated snapshots found on `/data` (separate disk) and merged into the live
   archive: 29,412 of 29,437 indexed polls present, 5.8GB. 112 truncated files
   from the 24 October outage fall back to the previous intact poll.
-- `v2` deployed; 24 tests. Report: `reports/sprint2/REPORT.md`.
+- Weather (`v3`): ten hourly features from archived forecast runs, cached
+  monthly for training and archived live every 30 minutes for serving. 60
+  minutes moves from −0.2% to +2.9% against the baseline; 30 minutes barely
+  moves. Deployed as `v3`.
+- 32 tests. Report: `reports/sprint2/REPORT.md`.
 
 ### 11.2 Issue register
 
@@ -860,9 +895,9 @@ resolved. Commit hashes refer to the `main` branch.
 - Database: 18MB (polls, errors, predictions). 29,412 of 29,437 indexed polls
   resolve to a raw file; 112 are truncated (issue 29).
 - Raw archive: 5.8GB, no deletion policy.
-- Models: `v1` (3 months) retained for reference; `v2` (13 months, 50.5M trips)
-  deployed and serving. The live-state correction is trained and deployed but
-  disabled by its gate.
+- Models: `v1` (3 months), `v2` (13 months, calendar), `v3` (13 months plus
+  hourly weather, deployed and serving). The live-state correction is trained
+  and deployed but disabled by its gate.
 - Sprint 1: complete with a recorded scope change. Sprint 2: 13-month retrain
   done; dashboard, weather, PostgreSQL and prediction retention still open.
 - Known growth item: `predictions` grows ~2,500 rows per `/queue` call; retention

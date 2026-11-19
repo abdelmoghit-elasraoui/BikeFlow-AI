@@ -171,6 +171,26 @@ necessary and possible:
 The split is chronological: train before 2026-10-06, validation 6-19 October,
 untouched test 20 October-2 November.
 
+## Sprint 2: hourly weather (`v3`)
+
+```sh
+# Cache 13 months of archived hourly forecasts (Open-Meteo, no key):
+uv run bikeflow weather-fetch --start 2025-10-01 --end 2026-11-03
+
+# Train with the weather columns joined before the split:
+uv run bikeflow train --version v3 --targets data/processed/v2 --months 202510 202511 202512 202601 202602 202603 202604 202605 202606 202607 202608 202609 202610 --weather
+
+# Archive the live forecast for serving (run by a systemd timer every 30 min):
+uv run bikeflow weather-collect
+```
+
+Training reads the **historical forecast** API, so it sees what a forecaster
+knew at issue time rather than the weather that was later observed. Serving
+reads `data/weather/live_forecast.parquet`, written by the timer; the API makes
+no external call on the request path, and missing hours stay empty (LightGBM
+handles missing values). `metadata.json` records the weather source, variables,
+cache path and a digest of the weather frame.
+
 ## Sprint 2: live-state features and the correction model
 
 ```sh

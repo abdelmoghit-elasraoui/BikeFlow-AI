@@ -18,12 +18,13 @@ cd ~/Desktop/bikeflow && .venv/bin/python -m pytest -q 2>&1 | tail -2
 ```
 
 ```sh
-ls -lh data/models/v1 data/models/v2
+ls -lh data/models/v1 data/models/v2 data/models/v3
 ```
 
-Want: `"status":"ok"` and `"model_version":"v2"`, `"stale":false`, `24 passed`,
-four boosters of ~400KB in `v1` and 2.5–3.4MB in `v2` (the 30-minute models use
-all 600 trees), plus four `*_base.npy` offset tables.
+Want: `"status":"ok"` and `"model_version":"v3"`, `"stale":false`, `32 passed`,
+four boosters of ~400KB in `v1`, 2.5–3.4MB in `v2` and 3.4–3.6MB in `v3` (the
+30-minute models use all 600 trees), plus four `*_base.npy` offset tables and
+`data/weather/live_forecast.parquet`.
 If the first call returns nothing, the SSH tunnel died — rerun the first line.
 The services on the server are unaffected.
 
@@ -114,10 +115,16 @@ turned 30 minutes into a win. At 60 minutes it stayed level but 0.2% behind, and
 that is reported as a loss, with the measured reason: the per-key median offers
 only 0.53% headroom at that horizon.
 
-Then the honest part, because he will ask: sliced by hour, the gain is +3.2% on
-weekends, +2.3% on the quiet 90% of stations, and **zero between 15:00 and
-18:00**. At the afternoon peak — when dispatch actually needs it — the model and
-the baseline are indistinguishable.
+Then the honest part, because he will ask: sliced by hour, the `v2` gain is
++3.2% on weekends, +2.3% on the quiet 90% of stations, and **zero between 15:00
+and 18:00**. At the afternoon peak the calendar model and the baseline are
+indistinguishable.
+
+Then the third line: `v3` adds ten hourly weather features from archived forecast
+runs. On the same split and test rows it barely moves 30 minutes (0.877/0.876)
+but takes 60 minutes from 0.2% **behind** the baseline to **+2.9%/+3.0% ahead**,
+and from 5.81/5.86 to 5.39 on the busiest 50 stations. That is the headroom the
+calendar was missing.
 
 ### 2.5 Reproducibility (2 min)
 
@@ -141,7 +148,7 @@ Say: the dataset hash is stored inside the artifact, so any model traces back
 to the exact frame that produced it. 4,234 codes = 2,117 trip-station
 categories + 2,117 live GBFS bridges; that is exactly why `v2` records
 `unknown_station_code` separately, since the mapping length is not the category
-count. Twenty-four tests cover the API contract, prediction logging, unseen
+count. Thirty-two tests cover the API contract, prediction logging, unseen
 stations, and training invariants — including `issued < target`.
 
 ---
@@ -156,9 +163,9 @@ stations, and training invariants — including `issued < target`.
 | Target rows, 30 min / 60 min | 9,150,816 / 4,575,408 (`v1`) · 40,314,384 / 20,157,192 (`v2`) |
 | Held-out test windows per flow | 1,396,464 / 698,232 (`v1`) · 1,294,896 / 647,448 (`v2`) |
 | Split boundary | `v1`: train < 2 Feb · val 2–15 Feb · test 16–28 Feb 2026. `v2`: train < 6 Oct · val 6–19 Oct · test 20 Oct–2 Nov 2026 |
-| MAE 30 min dep / arr | `v1` 0.412 / 0.408 (baseline 0.478 / 0.472) · `v2` 0.879 / 0.883 (baseline 0.896 / 0.897) |
-| MAE 60 min dep / arr | `v1` 0.746 / 0.740 (baseline 0.811 / 0.801) · `v2` 1.471 / 1.481 (baseline 1.468 / 1.476) |
-| Improvement | `v1` +13.8% / +13.4% · +8.0% / +7.5% — `v2` +1.8% / +1.6% · −0.2% / −0.3% |
+| MAE 30 min dep / arr | `v1` 0.412 / 0.408 (baseline 0.478 / 0.472) · `v2` 0.879 / 0.883 · `v3` **0.877 / 0.876** (baseline 0.896 / 0.897) |
+| MAE 60 min dep / arr | `v1` 0.746 / 0.740 (baseline 0.811 / 0.801) · `v2` 1.471 / 1.481 · `v3` **1.425 / 1.432** (baseline 1.468 / 1.476) |
+| Improvement | `v1` +13.8% / +13.4% · +8.0% / +7.5% — `v2` +1.8% / +1.6% · −0.2% / −0.3% — `v3` +2.1% / +2.4% · +2.9% / +3.0% |
 | Best iteration | `v1` 72–75 of 600 · `v2` 600 / 600 at 30 min, 61 / 71 at 60 min |
 | Per-key median headroom | 2.79% at 30 min, 0.53% at 60 min |
 | Live stations / polls / raw | 2,519 / 19.4k / 3.8GB |
@@ -239,10 +246,10 @@ bikeflow serve --version v2
 
 1. ~~**13-month trips + retrain `v2`.**~~ **Done 19 November.** 50.5M trips, L1
    objective, per-key offset, deployed. Report: `reports/sprint2/REPORT.md`.
-2. **Weather join.** Cached, using archived forecast runs available at
-   prediction time — no leakage of later observations. The measured reason this
-   is next: 60-minute models have only 0.53% calendar headroom left, and the
-   afternoon peak is where the calendar model stops.
+2. ~~**Weather join.**~~ **Done 19 November.** Ten hourly features from archived
+   forecast runs, cached monthly for training and archived live every 30
+   minutes for serving. 60 minutes went from −0.2% to +2.9% against the
+   baseline; 30 minutes barely moved.
 3. **Live-state correction.** Trained on the October overlap and deployed
    disabled: it wins its holdout but the gain is a seasonal level fix that
    reverses in November, proven by an ablation and a snapshot-flow proxy.
@@ -273,7 +280,7 @@ both an accepted and a rejected candidate.
 | What loss did you optimise? | `v1`: LightGBM's default L2, with L1 early stopping and L1 reporting — a real mismatch. `v2` was retrained with `regression_l1` because MAE is minimised by the conditional median. That mismatch alone cost 12–15% at thirteen months: the per-key median scores 0.871 against the mean's 0.896 on the same rows. |
 | Is +13% real? | Against a seasonal-naive that already knows station, weekday and time-of-day, over 1.4M held-out windows, and it holds on the busiest 50 stations. Real but modest; the headroom is weather, holidays and lags. |
 | Why is `v2` only +1.8% when `v1` was +13.8%? | The baseline got much better, not the model worse. Three months gave ~8 samples per (station, weekday, slot) key; thirteen months gives ~58. The comparison is not head to head — different baseline, different test window. |
-| Why doesn't `v2` beat the baseline at 60 minutes? | Because there is nothing left in calendar features at that aggregation. The per-key median — the best any calendar-only lookup can do — offers 0.53% headroom at 60 minutes, against 2.79% at 30. Best iteration is 61 of 600, so early stopping fires: the trees find no signal beyond the offset. Weather is the next feature that can move it. |
+| Why didn't `v2` beat the baseline at 60 minutes? | Because there is nothing left in calendar features at that aggregation: the per-key median offers 0.53% headroom at 60 minutes, against 2.79% at 30. That was the diagnosis, and it was right — adding weather moved 60 minutes from −0.2% to **+2.9%** (`v3`), while flattening 30 minutes, which already had the signal. |
 | Where does the model actually win? | +3.2% on weekends, +2.3% on the quiet 90% of stations, +11% overnight, and **nothing at the 15:00–18:00 peak**. The edge is where the baseline is noisiest, not where dispatch needs it most. Stated in the report with the slice table. |
 | Did you try live inventory features? | Yes. The migrated snapshots were on a second disk, and the October overlap gave 871k labelled rows. On its holdout the correction looked excellent: +7.8%/+8.5% at 30 minutes, +12%/+13% at 60. Two checks before enabling: an ablation showed the gain is a level recalibration, not the state; a snapshot-flow proxy showed the calendar already over-predicts November by 16.5% and the blend would push it to 31.5%. It is deployed **disabled**, and the reason is written in `live_metrics.json`. |
 | Overfitting? | Early stopping on a 14-day validation block, best iteration 72–75 of 600 in `v1` and 61–71 of 600 at 60 minutes in `v2`, test touched once, station encoding fit on train only, offset table computed strictly before validation. |
@@ -287,23 +294,20 @@ both an accepted and a rejected candidate.
 
 ## 7. The weakness — say it before he finds it
 
-On what is deployed (`v2`):
+On what is deployed (`v3`):
 
-> "Three limitations worth flagging. First, at 60 minutes the model is 0.2%
-> behind its own baseline — I report that as a loss, not a tie. The reason is
-> measurable: at that aggregation the per-key median, which is the best any
-> calendar-only lookup can do, has only 0.53% headroom left. The features, not
-> the model, are the limit.
+> "Two limitations worth flagging. First, at 30 minutes weather buys almost
+> nothing: 0.877 against 0.879. The daily shape is already in the calendar
+> features, and a 14-day window does not carry enough weather variation to move
+> it.
 >
-> Second, the gain is off-peak. Slice the test rows and the model is +3.2% on
-> weekends and +11% overnight, but it is level with the baseline between 15:00
-> and 18:00. That is where a dispatcher needs it, and calendar features cannot
-> get there.
->
-> Third, the offset table is the per-key mean, but with an L1 objective the
+> Second, the offset table is the per-key mean, but with an L1 objective the
 > optimal per-key constant is the median. That is worth up to 2.8% at 30
 > minutes on held-out rows. I measured it and left it as the next experiment
-> rather than change the model at the end of the sprint."
+> rather than change the model at the end of the sprint.
+>
+> The 60-minute gap I flagged in `v2` is closed: weather took it from 0.2%
+> behind the baseline to 2.9% ahead, on the same rows."
 
 On `v1`, if he asks why the older artifact is still there:
 
@@ -314,8 +318,9 @@ On `v1`, if he asks why the older artifact is still there:
 > fall."
 
 Said first, it is rigour. Said after he finds it, it is an excuse. The same
-applies to: no weather, approximated station lifespans, an uncalibrated queue
-score, and a single 14-day test window with no confidence interval. All are
+applies to: one 14-day test window with no confidence interval, approximated
+station lifespans, an uncalibrated queue score, and a live-state correction that
+is trained but disabled because its gain does not transfer to November. All are
 written in `reports/sprint1/REPORT.md` and `reports/sprint2/REPORT.md` — keep
 both open in a second tab.
 

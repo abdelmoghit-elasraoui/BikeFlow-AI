@@ -12,7 +12,8 @@ Sprint 1 evidence stays reproducible.
   trips, each archive verified byte-exact against S3.
 - Targets rebuilt at both horizons in `data/processed/v2/`: 40,314,384 rows at
   30 minutes and 20,157,192 at 60 minutes, 2,130 stations.
-- Four `v2` boosters plus per-key offset tables in `data/models/v2/`.
+- Four `v2` boosters plus per-key offset tables in `data/models/v2/`, and four
+  `v3` boosters that add hourly weather, in `data/models/v3/`.
 - The L1 objective and the additive offset described below.
 - `v2` serving on the Sydney host, with `/health`, `/queue`, and `/forecasts`
   verified against the live snapshot.
@@ -157,6 +158,42 @@ calendar-only features, and it is the strongest argument for weather and live
 state: both vary within a weekday, so both act exactly where the calendar model
 has nothing left to say.
 
+## Weather (`v3`)
+
+Ten hourly features from Open-Meteo's historical forecast API: temperature,
+apparent temperature, precipitation, wind, humidity, cloud cover, snow depth,
+visibility, plus `is_precipitating` and `is_cold`. Training uses the archived
+forecast run, not the observation, so the model sees what a forecaster knew at
+issue time. Serving reads the live forecast that `bikeflow-weather.timer`
+archives every 30 minutes; the request path makes no external call.
+
+Same targets, same split, same test windows as `v2`:
+
+| Horizon | Flow | `v2` | `v3` | Change | Baseline | `v3` vs baseline |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 30 min | departures | 0.879 | 0.877 | −0.3% | 0.896 | +2.1% |
+| 30 min | arrivals | 0.883 | 0.876 | −0.8% | 0.897 | +2.4% |
+| 60 min | departures | 1.471 | 1.425 | **−3.2%** | 1.468 | **+2.9%** |
+| 60 min | arrivals | 1.481 | 1.432 | **−3.3%** | 1.476 | **+3.0%** |
+
+Two things follow.
+
+1. **At 30 minutes, weather adds almost nothing.** The calendar features already
+   carry the daily shape, and the weather over a 14-day window does not vary
+   enough to move MAE more than a few thousandths. The small gain is within what
+   one test window can resolve.
+2. **At 60 minutes it is the difference between losing and winning.** The
+   horizon that was 0.2–0.3% behind the baseline is now 2.9–3.0% ahead, and on
+   the busiest 50 stations it goes from 5.81/5.86 against a 5.74/5.80 baseline
+   to **5.39 against the same baseline**. That is the headroom the per-key
+   median analysis predicted was not in the calendar.
+
+All four models now stop at the 600-tree cap with validation still improving,
+so the next measured step is raising the cap rather than adding features.
+
+Caveat: one 14-day window, and weather is autocorrelated, so the 60-minute gain
+should be confirmed on rolling windows before it is treated as settled.
+
 ## Comparison with `v1`
 
 The two versions are not comparable head to head — different test windows and
@@ -192,7 +229,8 @@ that failed on the server.
 | Stage | Wall clock | Peak resident memory |
 | --- | ---: | ---: |
 | Targets, 13 months | 5.5 min | — |
-| Training, four models | 20.0 min | 2.9 GB |
+| Training, four models (`v2`) | 20.0 min | 2.9 GB |
+| Training, four models (`v3`, 16 features) | 74 min | 3.8 GB |
 
 Training runs on the 8 GB laptop with 8 cores; the server only serves. The
 memory work is what makes 40M rows fit: features are added in place, splits are
@@ -265,9 +303,9 @@ poll and reports how many it skipped.
   on validation is the next experiment.
 - **One 14-day test window, no confidence interval.** The improvement is small
   enough that a paired bootstrap would be more informative than a point MAE.
-- **Calendar-only features.** No weather, holidays, events, or lag features.
-  `v1` documented why lags were excluded; the archive is now long enough to
-  reconsider that.
+- **`v2` is calendar-only.** `v3` adds weather; holidays, events and lag
+  features are still absent. `v1` documented why lags were excluded; the archive
+  is now long enough to reconsider that.
 - **The gain is concentrated off-peak.** At the afternoon peak the model and
   the baseline are indistinguishable. Reported in the slice table above, not
   hidden behind the headline MAE.
@@ -279,11 +317,12 @@ poll and reports how many it skipped.
 
 ## Next steps
 
-1. Weather join from archived forecast runs, cached, with no leakage of later
-   observations.
-2. Per-key median offset, then re-measure: it bounds what calendar features can
-   deliver at 60 minutes.
-3. Raise the tree cap for the 30-minute models and stop on validation.
+1. Per-key median offset, then re-measure: it bounds what the calendar can
+   deliver and applies to `v3` as well.
+2. Raise the tree cap: every `v3` model stops at 600 with validation still
+   improving.
+3. Rolling-origin evaluation; the current 14-day window contains no holiday and
+   cannot resolve a 0.5% difference.
 4. Re-run the live-state correction when the November trip archive lands:
    `bikeflow live-features --start 2026-11-12 --end 2026-12-01 --horizon 30 --out data/processed/live_30min.parquet`
    then `bikeflow train-live --live data/processed/live_30min.parquet`. It is

@@ -157,6 +157,12 @@ trained, evaluated, and deployed. Results, the diagnosis of why the first run
 lost to the baseline, and the remaining limitations are in
 `reports/sprint2/REPORT.md`.
 
+**Weather joined and deployed, 19 November 2026.** Ten hourly features from
+archived Open-Meteo forecast runs, cached monthly for training and archived live
+every 30 minutes for serving. On the same split and test rows, 30 minutes barely
+moves (0.877/0.876 against 0.879/0.883) and 60 minutes goes from 0.2% behind the
+baseline to 2.9% ahead (1.425/1.432). Deployed as model `v3`.
+
 **Live-state correction, 19 November 2026.** The additive model, its feature
 builder (`live-features`), trainer (`train-live`) and a promotion gate are
 implemented, and the API loads a correction only when the gate enables it. It is
