@@ -158,6 +158,22 @@ calendar-only features, and it is the strongest argument for weather and live
 state: both vary within a weekday, so both act exactly where the calendar model
 has nothing left to say.
 
+`v3`, with weather, moves the shape but does not fix everything:
+
+| Slice | `v2` dep | `v3` dep | `v2` arr | `v3` arr |
+| --- | ---: | ---: | ---: | ---: |
+| All | +1.8% | +2.1% | +1.6% | +2.4% |
+| Busiest 10% of stations | +0.7% | +1.3% | −0.2% | +1.8% |
+| Weekends | +3.2% | +3.5% | +3.1% | +3.7% |
+| 01:00-04:00 | +11% | +11% | +13% | +13% |
+| 07:00-09:00 | ~0% | **−2.1%** | ~0% | **−1.7%** |
+
+The busy-station and weekend gains are real and new. The morning peak is now
+worse than the baseline: commuting is weather-insensitive, and the extra
+features add variance where the calendar was already adequate. The afternoon
+peak is where weather pays. Aggregate MAE hides both directions, which is why
+the slices are reported.
+
 ## Weather (`v3`)
 
 Ten hourly features from Open-Meteo's historical forecast API: temperature,
