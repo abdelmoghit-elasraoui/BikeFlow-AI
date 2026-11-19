@@ -119,11 +119,22 @@ def create_app(models_dir, data_dir):
         "unknown_station_code", max(station_codes.values(), default=-1) + 1
     )
     base_tables = {}
+    # Every unseen station maps to unknown_code, so the table has to cover at
+    # least that station's block: (code + 1) * 7 weekdays * 48 slots. Tables
+    # written before this bound existed were sized by max(station_code) and
+    # raised IndexError on the unknown category, so pad instead of trusting it.
+    needed = (int(unknown_code) + 1) * 336
     for horizon in (30, 60):
         for flow in ("departures", "arrivals"):
             path = models_dir / f"{horizon}min_{flow}_base.npy"
-            if path.exists():
-                base_tables[(horizon, flow)] = np.load(path)
+            if not path.exists():
+                continue
+            table = np.load(path)
+            if table.size < needed:
+                table = np.pad(
+                    table, (0, needed - table.size), constant_values=float(table.mean())
+                )
+            base_tables[(horizon, flow)] = table
     db_path = data_dir / "observations.sqlite"
     with closing(connect(db_path)):
         pass  # create the predictions table if absent

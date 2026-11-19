@@ -103,7 +103,7 @@ def per_row_key_mean(frame, horizon, cutoff, flow):
     a correction to, so it does not spend its leaves re-learning a lookup
     table it can be handed directly.
     """
-    stations = int(frame.station_code.max()) + 1
+    stations = int(frame.station_code.max()) + 2  # +1 unseen code, +1 inclusive
     width = stations * 7 * 48
     slot = (
         frame.minute_slot.to_numpy(np.int64) // 30
@@ -115,11 +115,11 @@ def per_row_key_mean(frame, horizon, cutoff, flow):
     values = frame[flow].to_numpy(np.float64)
     totals = np.bincount(key[mask], weights=values[mask], minlength=width)
     counts = np.bincount(key[mask], minlength=width).astype(np.float64)
-    means = np.divide(totals, counts, out=np.zeros_like(totals), where=counts > 0)
+    overall = float(values[mask].mean())
+    # Unseen keys fall back to the global mean, in the table as well: serving
+    # reads the table directly, so a zero there would silently drop the level.
+    means = np.divide(totals, counts, out=np.full(width, overall), where=counts > 0)
     base = means[key]
-    missing = counts[key] == 0
-    if missing.any():
-        base[missing] = float(values[mask].mean())
     return base.astype(np.float32), means.astype(np.float32)
 
 

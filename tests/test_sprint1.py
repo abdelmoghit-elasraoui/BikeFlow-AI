@@ -4,6 +4,7 @@ import gzip
 import json
 from datetime import timedelta
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -80,15 +81,52 @@ def test_training_writes_artifacts_and_beats_obvious_baseline(tiny_dataset, tmp_
     assert metadata["feature_columns"] == feature_columns()
 
 
+def _write_snapshot(data_dir, poll_id, stations, now):
+    """Persist one raw poll plus its polls row, as the collector would."""
+    from bikeflow import collector
+
+    db = collector.connect(data_dir)
+    raw_dir = data_dir / "raw" / "gbfs" / "2026" / "01" / "01"
+    raw_dir.mkdir(parents=True)
+    raw = raw_dir / f"{poll_id}.json.gz"
+    with gzip.open(raw, "wt", encoding="utf-8") as stream:
+        json.dump(
+            {
+                "poll_id": poll_id,
+                "station_status": {"payload": {"data": {"stations": stations}}},
+            },
+            stream,
+        )
+    eligible = sum(1 for s in stations if s["is_installed"] and s["is_renting"])
+    db.execute(
+        "INSERT INTO polls (id,retrieved_at,source_updated,status_hash,repeated_source,"
+        "raw_path,station_count,invalid_count,stale_count,ttl,eligible_count) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            poll_id,
+            now.isoformat(),
+            str(int(now.timestamp())),
+            "hash",
+            0,
+            str(raw.relative_to(data_dir)),
+            len(stations),
+            0,
+            0,
+            60,
+            eligible,
+        ),
+    )
+    db.commit()
+    db.close()
+
+
 def test_api_serves_forecasts_and_persists_predictions(tiny_dataset, tmp_path):
     from fastapi.testclient import TestClient
 
-    from bikeflow import collector
     from bikeflow.api import create_app
 
     run_training(tiny_dataset, tmp_path / "models", "vapi", months=("tiny",))
     data_dir = tmp_path / "data"
-    db = collector.connect(data_dir)
     now = pd.Timestamp.now(tz="UTC")
     station = {
         "station_id": "a",
@@ -99,37 +137,7 @@ def test_api_serves_forecasts_and_persists_predictions(tiny_dataset, tmp_path):
         "is_returning": 1,
         "last_reported": int(now.timestamp()),
     }
-    raw_dir = data_dir / "raw" / "gbfs" / "2026" / "01" / "01"
-    raw_dir.mkdir(parents=True)
-    raw = raw_dir / "poll1.json.gz"
-    with gzip.open(raw, "wt", encoding="utf-8") as stream:
-        json.dump(
-            {
-                "poll_id": "poll1",
-                "station_status": {"payload": {"data": {"stations": [station]}}},
-            },
-            stream,
-        )
-    db.execute(
-        "INSERT INTO polls (id,retrieved_at,source_updated,status_hash,repeated_source,"
-        "raw_path,station_count,invalid_count,stale_count,ttl,eligible_count) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (
-            "poll1",
-            now.isoformat(),
-            str(int(now.timestamp())),
-            "hash",
-            0,
-            str(raw.relative_to(data_dir)),
-            1,
-            0,
-            0,
-            60,
-            1,
-        ),
-    )
-    db.commit()
-    db.close()
+    _write_snapshot(data_dir, "poll1", [station], now)
 
     client = TestClient(create_app(tmp_path / "models" / "vapi", data_dir))
     assert client.get("/health").json()["status"] == "ok"
@@ -147,3 +155,44 @@ def test_api_serves_forecasts_and_persists_predictions(tiny_dataset, tmp_path):
     issued = pd.Timestamp(persisted["predictions"][0]["issued_at"])
     target = pd.Timestamp(persisted["predictions"][0]["target_window_utc"])
     assert issued < target  # prediction saved before its interval
+
+
+def test_api_scores_station_unseen_in_training(tiny_dataset, tmp_path):
+    """An unseen live station maps to the unknown category at the table edge.
+
+    The offset table was once sized by max(station_code), so the unknown code
+    indexed past its end and /queue returned 500 on the real deployment. This
+    keeps the unknown-station path covered end to end.
+    """
+    from fastapi.testclient import TestClient
+
+    from bikeflow.api import create_app
+
+    run_training(tiny_dataset, tmp_path / "models", "vapi", months=("tiny",))
+    data_dir = tmp_path / "data"
+    now = pd.Timestamp.now(tz="UTC")
+    unseen = {
+        "station_id": "not-in-training",
+        "num_bikes_available": 1,
+        "num_docks_available": 30,
+        "is_installed": 1,
+        "is_renting": 1,
+        "is_returning": 1,
+        "last_reported": int(now.timestamp()),
+    }
+    _write_snapshot(data_dir, "poll1", [unseen], now)
+
+    client = TestClient(create_app(tmp_path / "models" / "vapi", data_dir))
+    forecast = client.get("/forecasts/not-in-training?horizon=30")
+    assert forecast.status_code == 200, forecast.text
+    assert forecast.json()["forecast_departures"] >= 0
+    assert client.get("/queue?horizon=60&limit=5").status_code == 200
+
+    # Artifacts from before the bound fix were sized by max(station_code) and
+    # omitted the unknown block entirely; loading must pad, not raise.
+    models_dir = tmp_path / "models" / "vapi"
+    for path in models_dir.glob("*_base.npy"):
+        table = np.load(path)
+        np.save(path, table[: len(table) - 336])
+    client = TestClient(create_app(models_dir, data_dir))
+    assert client.get("/queue?horizon=30&limit=5").status_code == 200
