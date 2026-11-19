@@ -294,13 +294,17 @@ def train_live_correction(
     )
     correction = booster.predict(merged.loc[val_mask, CORRECTION_FEATURES])
     blended = calendar[val_mask] + correction
-    per_window = pd.DataFrame(
-        {
-            "window": merged.loc[val_mask, "window_start_utc"].to_numpy(),
-            "calendar_err": np.abs(calendar[val_mask] - truth[val_mask]),
-            "blended_err": np.abs(blended - truth[val_mask]),
-        }
-    ).groupby("window")[["calendar_err", "blended_err"]].mean()
+    per_window = (
+        pd.DataFrame(
+            {
+                "window": merged.loc[val_mask, "window_start_utc"].to_numpy(),
+                "calendar_err": np.abs(calendar[val_mask] - truth[val_mask]),
+                "blended_err": np.abs(blended - truth[val_mask]),
+            }
+        )
+        .groupby("window")[["calendar_err", "blended_err"]]
+        .mean()
+    )
     comparison = {
         "rows": int(val_mask.sum()),
         "windows": int(merged.loc[val_mask, "window_start_utc"].nunique()),
