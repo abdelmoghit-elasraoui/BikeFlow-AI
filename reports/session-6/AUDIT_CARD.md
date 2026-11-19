@@ -36,9 +36,9 @@ The services on the server are unaffected.
 > NYC. We predict departures and arrivals separately for the next 30 and 60
 > minutes, combine them with live inventory, and rank the stations that will run
 > short or overflow. It is a pooled LightGBM trained on 50.5M trips across
-> thirteen months, evaluated against a seasonal-naive baseline on 1.3M held-out
-> windows it never saw. CPU-only, fully local, and every forecast is logged
-> before its target window."
+> thirteen months plus 13 months of hourly weather, evaluated against a
+> seasonal-naive baseline on 1.3M held-out windows it never saw. CPU-only, fully
+> local, and every forecast is logged before its target window."
 
 ---
 

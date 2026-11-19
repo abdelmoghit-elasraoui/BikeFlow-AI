@@ -15,8 +15,8 @@ Sprint 1 evidence stays reproducible.
 - Four `v2` boosters plus per-key offset tables in `data/models/v2/`, and four
   `v3` boosters that add hourly weather, in `data/models/v3/`.
 - The L1 objective and the additive offset described below.
-- `v2` serving on the Sydney host, with `/health`, `/queue`, and `/forecasts`
-  verified against the live snapshot.
+- `v3` serving on the Sydney host, with `/health`, `/queue`, and `/forecasts`
+  verified against the live snapshot and the archived hourly forecast.
 
 ## Data added
 
