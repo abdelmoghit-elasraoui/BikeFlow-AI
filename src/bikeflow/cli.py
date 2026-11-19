@@ -62,6 +62,16 @@ def main():
     train_live.add_argument("--models", type=Path, default=Path("data/models"))
     train_live.add_argument("--horizon", type=int, choices=(30, 60), default=30)
     train_live.add_argument("--flow", choices=("departures", "arrivals"), default="departures")
+    weather_fetch = sub.add_parser(
+        "weather-fetch", help="Cache historical hourly forecasts for training"
+    )
+    weather_fetch.add_argument("--start", required=True)
+    weather_fetch.add_argument("--end", required=True)
+    weather_fetch.add_argument("--cache", type=Path, default=Path("data/raw/weather"))
+    weather_collect = sub.add_parser(
+        "weather-collect", help="Archive the live hourly forecast for serving"
+    )
+    weather_collect.add_argument("--cache", type=Path, default=Path("data/weather"))
     serve = sub.add_parser("serve", help="Serve forecasts and the ranked queue")
     serve.add_argument("--version", default="v1")
     serve.add_argument("--models", type=Path, default=Path("data/models"))
@@ -119,6 +129,32 @@ def main():
                     "stations": int(frame.station_code.nunique()),
                     "windows": int(frame.window_start_utc.nunique()),
                     "out": str(args.out),
+                }
+            )
+        )
+    if args.command == "weather-fetch":
+        from .weather import load
+
+        frame = load(args.start, args.end, args.cache)
+        print(
+            json.dumps(
+                {
+                    "hours": len(frame),
+                    "start": str(frame.weather_hour.min()),
+                    "end": str(frame.weather_hour.max()),
+                }
+            )
+        )
+    if args.command == "weather-collect":
+        from .weather import fetch_live
+
+        frame = fetch_live(args.cache)
+        print(
+            json.dumps(
+                {
+                    "hours": len(frame),
+                    "start": str(frame.weather_hour.min()),
+                    "end": str(frame.weather_hour.max()),
                 }
             )
         )
