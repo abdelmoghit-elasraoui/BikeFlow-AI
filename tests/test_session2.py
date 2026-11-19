@@ -149,9 +149,7 @@ def test_run_session2_end_to_end(tmp_path):
     )
     out = tmp_path / "out"
     result = run_session2(trips, mapping, out, ["202601"])
-    assert [m["archive"] for m in result["manifest"]["months"]] == [
-        "202601-citibike-tripdata.zip"
-    ]
+    assert [m["archive"] for m in result["manifest"]["months"]] == ["202601-citibike-tripdata.zip"]
     assert result["manifest"]["stations"] == 2
     targets = sorted((out / "targets_30min").rglob("*.parquet"))
     assert len(targets) == 1

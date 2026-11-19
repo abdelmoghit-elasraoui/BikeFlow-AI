@@ -260,15 +260,11 @@ def run_training(
         val_start = (pd.Timestamp(test_start) - timedelta(days=VAL_DAYS)).date().isoformat()
         log(f"Model {horizon}min: val_start {val_start}, test_start {test_start}")
         baselines, _ = baseline_means_for_test(frame, horizon, test_start)
-        train_mask = (
-            utc_naive(frame.window_start_utc) < pd.Timestamp(val_start).to_datetime64()
-        )
+        train_mask = utc_naive(frame.window_start_utc) < pd.Timestamp(val_start).to_datetime64()
         log(f"Model {horizon}min: fitting station codes on {int(train_mask.sum()):,} train rows")
         # Encoding depends only on the station column, so it is fitted once per
         # horizon instead of once per flow.
-        mapping, unknown = encode_stations(
-            frame.loc[train_mask, ["station_id"]], [frame]
-        )
+        mapping, unknown = encode_stations(frame.loc[train_mask, ["station_id"]], [frame])
         station_mapping.update({k: int(v) for k, v in mapping.items()})
         bridged = {
             live: int(mapping[trip]) for live, trip in live_to_trip.items() if trip in mapping
@@ -276,8 +272,7 @@ def run_training(
         unknown_code = int(unknown)
         station_mapping.update(bridged)
         log(
-            f"Model {horizon}min: {len(mapping):,} station codes, "
-            f"{len(bridged):,} live ids bridged"
+            f"Model {horizon}min: {len(mapping):,} station codes, {len(bridged):,} live ids bridged"
         )
         horizon_metrics = {"val_start": val_start, "test_start": test_start, "flows": {}}
         for flow in FLOWS:

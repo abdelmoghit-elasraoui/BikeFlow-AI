@@ -160,9 +160,7 @@ def scan_month(archive, matched):
         # Categorical with the full matched set as categories: every month gets
         # an identical dtype, so the 13-month concat stays 2 bytes per station
         # instead of one 8-byte object pointer + string per row.
-        frame["station"] = frame.station.astype(
-            pd.CategoricalDtype(sorted(matched), ordered=False)
-        )
+        frame["station"] = frame.station.astype(pd.CategoricalDtype(sorted(matched), ordered=False))
         # .values above drops tz; these wall times are UTC, so re-localize.
         frame["window"] = pd.DatetimeIndex(frame.window, tz="UTC")
         frame["n"] = frame.n.astype("int32")
@@ -332,7 +330,10 @@ def train_key_means(events, spans, test_start, horizon, columns=("station", "win
         codes, uniques = pd.factorize(events[station_col], sort=False)
         first_ord = np.fromiter(
             (
-                pd.Timestamp(spans[str(s)][0]).to_datetime64().astype("datetime64[D]").astype("int64")
+                pd.Timestamp(spans[str(s)][0])
+                .to_datetime64()
+                .astype("datetime64[D]")
+                .astype("int64")
                 if str(s) in spans
                 else -1
                 for s in uniques
@@ -342,7 +343,10 @@ def train_key_means(events, spans, test_start, horizon, columns=("station", "win
         )
         last_ord = np.fromiter(
             (
-                pd.Timestamp(spans[str(s)][1]).to_datetime64().astype("datetime64[D]").astype("int64")
+                pd.Timestamp(spans[str(s)][1])
+                .to_datetime64()
+                .astype("datetime64[D]")
+                .astype("int64")
                 if str(s) in spans
                 else -1
                 for s in uniques

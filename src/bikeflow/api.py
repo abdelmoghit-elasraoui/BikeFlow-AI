@@ -115,9 +115,7 @@ def create_app(models_dir, data_dir):
     station_codes = metadata.get("station_codes", {})
     # The unknown code is the first index past the trained categories, not the
     # size of the served mapping: station_codes also carries live-id bridges.
-    unknown_code = metadata.get(
-        "unknown_station_code", max(station_codes.values(), default=-1) + 1
-    )
+    unknown_code = metadata.get("unknown_station_code", max(station_codes.values(), default=-1) + 1)
     base_tables = {}
     # Every unseen station maps to unknown_code, so the table has to cover at
     # least that station's block: (code + 1) * 7 weekdays * 48 slots. Tables
@@ -131,9 +129,7 @@ def create_app(models_dir, data_dir):
                 continue
             table = np.load(path)
             if table.size < needed:
-                table = np.pad(
-                    table, (0, needed - table.size), constant_values=float(table.mean())
-                )
+                table = np.pad(table, (0, needed - table.size), constant_values=float(table.mean()))
             base_tables[(horizon, flow)] = table
     db_path = data_dir / "observations.sqlite"
     with closing(connect(db_path)):
