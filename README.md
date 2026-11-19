@@ -171,6 +171,25 @@ necessary and possible:
 The split is chronological: train before 2026-10-06, validation 6-19 October,
 untouched test 20 October-2 November.
 
+## Sprint 2: live-state features and the correction model
+
+```sh
+# Build live-state features from archived snapshots (one row per station/window):
+uv run bikeflow live-features --version v2 --start 2026-11-12 --end 2026-12-01 --horizon 30 --out data/processed/live_30min.parquet
+
+# Fit the additive correction on the overlap with the trip archive:
+uv run bikeflow train-live --version v2 --live data/processed/live_30min.parquet --horizon 30 --flow departures
+```
+
+The correction is additive on top of the calendar forecast and sees the
+station's current bikes, docks, capacity, ratios and renting flag. It is only
+loaded by the API when `live_metrics.json` marks it `enabled`, which happens
+only if the blend beats the calendar forecast on a chronological holdout inside
+the overlap. The snapshot archive (from 2026-11-12) and the trip archive (to
+2026-10-31) do not overlap yet, so `train-live` exits with that reason instead
+of fitting on nothing.
+
+
 
 ## Data sources and interpretation
 

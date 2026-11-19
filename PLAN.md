@@ -157,6 +157,13 @@ trained, evaluated, and deployed. Results, the diagnosis of why the first run
 lost to the baseline, and the remaining limitations are in
 `reports/sprint2/REPORT.md`.
 
+**Live-state correction, 19 November 2026.** The additive model, its feature
+builder (`live-features`), trainer (`train-live`) and a promotion gate are
+implemented and tested, and the API loads a correction only when the gate
+enables it. It is not counted as delivered performance: the snapshot archive
+starts on 12 November and the trip archive ends on 31 October, so there is no
+labelled overlap to train or validate on. The November trip archive unlocks it.
+
 - Compact the observations schema: store bikes/docks/flags/disabled counts as
   integer columns and stop duplicating the full station JSON payload as text
   (keep it compressed or only in the raw archive). Observed scale: 4,147 polls

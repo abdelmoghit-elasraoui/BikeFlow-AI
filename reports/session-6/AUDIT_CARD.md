@@ -21,9 +21,9 @@ cd ~/Desktop/bikeflow && .venv/bin/python -m pytest -q 2>&1 | tail -2
 ls -lh data/models/v1 data/models/v2
 ```
 
-Want: `"status":"ok"` and `"model_version":"v2"`, `"stale":false`, `18 passed`,
-four boosters of ~400KB in `v1` and ~3MB in `v2` (the `v2` boosters are deeper
-because they fit residuals), plus four `*_base.npy` offset tables.
+Want: `"status":"ok"` and `"model_version":"v2"`, `"stale":false`, `24 passed`,
+four boosters of ~400KB in `v1` and 2.5–3.4MB in `v2` (the 30-minute models use
+all 600 trees), plus four `*_base.npy` offset tables.
 If the first call returns nothing, the SSH tunnel died — rerun the first line.
 The services on the server are unaffected.
 
@@ -110,10 +110,14 @@ Then the second line, deliberately: the thirteen-month retrain first **lost** to
 the baseline by 12–15%. The cause was not the data and not the split — it was
 that the model was trained with L2 (the mean) and scored with L1 (the median).
 Switching to `regression_l1` and fitting a correction around the per-key mean
-turned 30 minutes into a win and 60 minutes into a tie. The 60-minute tie is
-reported as a loss of 0.2%, with the measured reason: the per-key median offers
+turned 30 minutes into a win. At 60 minutes it stayed level but 0.2% behind, and
+that is reported as a loss, with the measured reason: the per-key median offers
 only 0.53% headroom at that horizon.
 
+Then the honest part, because he will ask: sliced by hour, the gain is +3.2% on
+weekends, +2.3% on the quiet 90% of stations, and **zero between 15:00 and
+18:00**. At the afternoon peak — when dispatch actually needs it — the model and
+the baseline are indistinguishable.
 
 ### 2.5 Reproducibility (2 min)
 
@@ -137,7 +141,7 @@ Say: the dataset hash is stored inside the artifact, so any model traces back
 to the exact frame that produced it. 4,234 codes = 2,117 trip-station
 categories + 2,117 live GBFS bridges; that is exactly why `v2` records
 `unknown_station_code` separately, since the mapping length is not the category
-count. Eighteen tests cover the API contract, prediction logging, unseen
+count. Twenty-four tests cover the API contract, prediction logging, unseen
 stations, and training invariants — including `issued < target`.
 
 ---
@@ -237,13 +241,18 @@ bikeflow serve --version v2
    objective, per-key offset, deployed. Report: `reports/sprint2/REPORT.md`.
 2. **Weather join.** Cached, using archived forecast runs available at
    prediction time — no leakage of later observations. The measured reason this
-   is next: 60-minute models have only 0.53% calendar headroom left.
-3. **React dashboard.** Station map, normal/warning/critical states, both
+   is next: 60-minute models have only 0.53% calendar headroom left, and the
+   afternoon peak is where the calendar model stops.
+3. **Live-state correction.** Built and gated: features, trainer, CLI and
+   serving path exist in `src/bikeflow/live.py`. It cannot be fitted yet because
+   the snapshot archive starts 12 November and trips end 31 October. The
+   November archive unlocks it; `enabled` is decided on a chronological holdout.
+4. **React dashboard.** Station map, normal/warning/critical states, both
    horizons, ranked queue, station detail, freshness, and a recorded replay so
    the demo survives a feed outage.
-4. **PostgreSQL behind a storage abstraction.** SQLite→Postgres becomes a
+5. **PostgreSQL behind a storage abstraction.** SQLite→Postgres becomes a
    configuration change, not a rewrite.
-5. **Predictions retention/dedup.** `/queue` logs ~2,500 rows per call.
+6. **Predictions retention/dedup.** `/queue` logs ~2,500 rows per call.
 
 **Sprint 3** adds JWT with roles, rate limits, input validation, an explicit
 fallback to the baseline when the model cannot run, and warning-quality
@@ -265,6 +274,8 @@ both an accepted and a rejected candidate.
 | Is +13% real? | Against a seasonal-naive that already knows station, weekday and time-of-day, over 1.4M held-out windows, and it holds on the busiest 50 stations. Real but modest; the headroom is weather, holidays and lags. |
 | Why is `v2` only +1.8% when `v1` was +13.8%? | The baseline got much better, not the model worse. Three months gave ~8 samples per (station, weekday, slot) key; thirteen months gives ~58. The comparison is not head to head — different baseline, different test window. |
 | Why doesn't `v2` beat the baseline at 60 minutes? | Because there is nothing left in calendar features at that aggregation. The per-key median — the best any calendar-only lookup can do — offers 0.53% headroom at 60 minutes, against 2.79% at 30. Best iteration is 61 of 600, so early stopping fires: the trees find no signal beyond the offset. Weather is the next feature that can move it. |
+| Where does the model actually win? | +3.2% on weekends, +2.3% on the quiet 90% of stations, +11% overnight, and **nothing at the 15:00–18:00 peak**. The edge is where the baseline is noisiest, not where dispatch needs it most. Stated in the report with the slice table. |
+| Why not add live inventory features now? | Built and gated, not trainable yet: the snapshot archive starts 12 November and the trip archive ends 31 October, so no window has both a label and a snapshot. November trips publish in early December; the trainer then runs and the gate decides whether it serves. |
 | Overfitting? | Early stopping on a 14-day validation block, best iteration 72–75 of 600 in `v1` and 61–71 of 600 at 60 minutes in `v2`, test touched once, station encoding fit on train only, offset table computed strictly before validation. |
 | Is `warning_score` calibrated? | No, and the report says so. It ranks; it is not a probability. Calibration only matters once we move to expected-cost decisions. |
 | How would you detect drift? | Every forecast is stored with its target window, so once trips land we can join and compute rolling MAE. Prediction distribution and station-set changes are cheap early signals. The logging exists; the scorer is Sprint 2/3. |
@@ -278,13 +289,18 @@ both an accepted and a rejected candidate.
 
 On what is deployed (`v2`):
 
-> "Two limitations worth flagging. First, at 60 minutes the model is 0.2%
+> "Three limitations worth flagging. First, at 60 minutes the model is 0.2%
 > behind its own baseline — I report that as a loss, not a tie. The reason is
 > measurable: at that aggregation the per-key median, which is the best any
 > calendar-only lookup can do, has only 0.53% headroom left. The features, not
-> the model, are the limit; weather is next.
+> the model, are the limit.
 >
-> Second, the offset table is the per-key mean, but with an L1 objective the
+> Second, the gain is off-peak. Slice the test rows and the model is +3.2% on
+> weekends and +11% overnight, but it is level with the baseline between 15:00
+> and 18:00. That is where a dispatcher needs it, and calendar features cannot
+> get there.
+>
+> Third, the offset table is the per-key mean, but with an L1 objective the
 > optimal per-key constant is the median. That is worth up to 2.8% at 30
 > minutes on held-out rows. I measured it and left it as the next experiment
 > rather than change the model at the end of the sprint."
