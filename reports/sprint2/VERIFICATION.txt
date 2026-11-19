@@ -1,0 +1,92 @@
+BIKEFLOW AI - SPRINT 2 (v2, 13 MONTHS) COMMANDS
+Repo: https://github.com/abdelmoghit-elasraoui/BikeFlow-AI
+MAC   = run on the Mac, inside the repo folder
+HOST  = run on the Sydney host, or prefix with: ssh bikeflow "..."
+
+
+SETUP AND TESTS
+
+[MAC] Install dependencies
+uv sync --locked --extra dev
+
+[MAC] Run all tests
+uv run pytest -q
+
+[MAC] Lint and formatting
+uv run ruff check src tests && uv run ruff format --check src tests
+
+
+DATA
+
+[MAC] List the thirteen trip archives
+ls -lh data/raw/trips/*-citibike-tripdata.zip
+
+[MAC] Show the v2 manifest (months, stations, limitations)
+uv run python -c "import json; m=json.load(open('data/processed/v2/manifest.json')); print('months', len(m['months']), 'stations', m['stations'], 'test_start', m['test_start']); [print(x) for x in m['limitations']]"
+
+[MAC] Count target rows at both horizons
+uv run python -c "import pyarrow.parquet as pq; [print(n, sum(pq.read_metadata(f.path).num_rows for f in pq.ParquetDataset('data/processed/v2/'+n).fragments), 'rows') for n in ('targets_30min','targets_60min')]"
+
+[MAC] Show baseline v0 scores from the same pre-test history
+cat data/processed/v2/baseline_v0.json
+
+
+MODEL
+
+[MAC] List v2 artifacts (four boosters, four offset tables, metadata)
+ls -lh data/models/v2/
+
+[MAC] Show model vs baseline for all four models
+uv run python -c "import json; m=json.load(open('data/models/v2/metrics.json')); [print(h, f, 'model', round(r['model_mae'],3), '| baseline', round(r['baseline_mae'],3), '|', str(round(r['improvement_pct'],2))+'%', '| busy50', round(r['busy50_model_mae'],2), 'vs', round(r['busy50_baseline_mae'],2), '| iters', r['best_iteration']) for h,hv in m['horizons'].items() for f,r in hv['flows'].items()]"
+
+[MAC] Check the offset table covers the unseen station code
+uv run python -c "import json,numpy as np; m=json.load(open('data/models/v2/metadata.json')); t=np.load('data/models/v2/30min_departures_base.npy'); print('unknown_code', m['unknown_station_code'], 'table_len', len(t), 'needed', (m['unknown_station_code']+1)*336, 'ok', len(t) >= (m['unknown_station_code']+1)*336)"
+
+[MAC] Show artifact metadata (hash, features, objective)
+uv run python -c "import json; m=json.load(open('data/models/v2/metadata.json')); print('hash', m['dataset_hash'][:16], 'months', len(m['months']), 'objective', m['params']['objective'], 'unknown', m['unknown_station_code'])"
+
+[MAC] Reproduce the full build (about 24 minutes on 8 cores)
+uv run bikeflow session2 --months 202510 202511 202512 202601 202602 202603 202604 202605 202606 202607 202608 202609 202610
+uv run bikeflow train --version v2 --targets data/processed/v2 --months 202510 202511 202512 202601 202602 202603 202604 202605 202606 202607 202608 202609 202610
+
+
+API
+
+[MAC] Open the SSH tunnel to the Sydney API
+ssh -f -N -L 8000:127.0.0.1:8000 bikeflow
+
+[MAC] Health check (expect model_version v2)
+curl -s localhost:8000/health | python3 -m json.tool
+
+[MAC] Snapshot freshness
+curl -s localhost:8000/freshness | python3 -m json.tool
+
+[MAC] Ranked rebalancing queue
+curl -s "localhost:8000/queue?horizon=30&limit=5" | python3 -c "import json,sys; q=json.load(sys.stdin); [print(r['station_id'][:12], r['recommendation'], round(r['warning_score'],2), 'bikes', r['current_bikes'], 'docks', r['current_docks']) for r in q['queue']]"
+
+[MAC] Forecast an id that is not in the snapshot (expect 404, not 500)
+curl -s -o /dev/null -w "%{http_code}\n" "localhost:8000/forecasts/not-a-real-station?horizon=30"
+
+[MAC] Show persisted predictions
+curl -s "localhost:8000/predictions?limit=3" | python3 -m json.tool
+
+
+HOST
+
+[HOST] Service state
+systemctl is-active bikeflow-api bikeflow-collector
+
+[HOST] Which model is the service serving
+systemctl cat bikeflow-api --no-pager | grep ExecStart
+
+[HOST] Recent API log
+journalctl -u bikeflow-api -n 10 --no-pager
+
+[HOST] Artifact inventory
+ls -lh /srv/bikeflow/data/models/v2/
+
+
+SECURITY
+
+[MAC] Confirm no secrets or data are tracked by Git
+git ls-files | grep -E "\.env$|\.sqlite$|data/|\.venv" || echo "clean"

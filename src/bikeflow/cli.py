@@ -32,12 +32,36 @@ def main():
     train = sub.add_parser("train", help="Train pooled LightGBM models and compare to baseline")
     train.add_argument("--version", default="v1")
     train.add_argument("--targets", type=Path, default=Path("data/processed/session2"))
+    train.add_argument(
+        "--months",
+        nargs="+",
+        default=["202512", "202601", "202602"],
+        help="month tags recorded in metadata (defaults to the Sprint 1 slice)",
+    )
     train.add_argument("--models", type=Path, default=Path("data/models"))
     train.add_argument(
         "--mapping",
         type=Path,
         default=Path("reports/first-session/station_mapping.csv"),
     )
+    live_features = sub.add_parser(
+        "live-features", help="Build live-state features from archived GBFS snapshots"
+    )
+    live_features.add_argument("--version", default="v2")
+    live_features.add_argument("--models", type=Path, default=Path("data/models"))
+    live_features.add_argument("--start", required=True, help="First day, e.g. 2026-11-12")
+    live_features.add_argument("--end", required=True, help="Day after the last, e.g. 2026-11-20")
+    live_features.add_argument("--horizon", type=int, choices=(30, 60), default=30)
+    live_features.add_argument("--out", type=Path, required=True)
+    train_live = sub.add_parser(
+        "train-live", help="Fit the live-state correction on the labelled trip/snapshot overlap"
+    )
+    train_live.add_argument("--version", default="v2")
+    train_live.add_argument("--targets", type=Path, default=Path("data/processed/v2"))
+    train_live.add_argument("--live", type=Path, required=True)
+    train_live.add_argument("--models", type=Path, default=Path("data/models"))
+    train_live.add_argument("--horizon", type=int, choices=(30, 60), default=30)
+    train_live.add_argument("--flow", choices=("departures", "arrivals"), default="departures")
     serve = sub.add_parser("serve", help="Serve forecasts and the ranked queue")
     serve.add_argument("--version", default="v1")
     serve.add_argument("--models", type=Path, default=Path("data/models"))
@@ -74,7 +98,43 @@ def main():
 
         print(
             json.dumps(
-                run_training(args.targets, args.models, args.version, args.mapping),
+                run_training(args.targets, args.models, args.version, args.mapping, args.months),
+                indent=2,
+                default=str,
+            )
+        )
+    if args.command == "live-features":
+        from .live import build_live_features
+
+        metadata = json.loads((args.models / args.version / "metadata.json").read_text())
+        frame = build_live_features(
+            args.data_dir, args.start, args.end, args.horizon, metadata["station_codes"]
+        )
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        frame.to_parquet(args.out, index=False)
+        print(
+            json.dumps(
+                {
+                    "rows": len(frame),
+                    "stations": int(frame.station_code.nunique()),
+                    "windows": int(frame.window_start_utc.nunique()),
+                    "out": str(args.out),
+                }
+            )
+        )
+    if args.command == "train-live":
+        from .live import train_live_correction
+
+        print(
+            json.dumps(
+                train_live_correction(
+                    args.targets,
+                    args.live,
+                    args.models,
+                    args.version,
+                    args.horizon,
+                    args.flow,
+                ),
                 indent=2,
                 default=str,
             )

@@ -387,20 +387,30 @@ Four pooled LightGBM regressors:
 categorical feature — not one model per station. This shares statistical
 strength across quiet stations and keeps the artifact small.
 
-Training settings: 600 trees max, learning rate 0.05, 31 leaves, early
+`v1` training settings: 600 trees max, learning rate 0.05, 31 leaves, early
 stopping after 50 rounds without validation improvement. Best iteration was
 72–75, so early stopping did the work.
 
-Artifacts in `data/models/v1/`:
+`v2` (thirteen months) changes two things and keeps the rest:
 
-- four booster files (`30min_departures.txt`, etc.);
-- `metadata.json` — dataset hash, feature list, hyperparameters, and the
-  station-code mapping bridged to 2,130 live GBFS ids;
-- `metrics.json` — every number below.
+- **Objective `regression_l1`.** MAE is minimised by the conditional median, so
+  the model targets it directly instead of LightGBM's default L2. Training with
+  L2 while scoring with L1 capped `v2` at the per-key mean baseline.
+- **Additive per-key offset.** Each target is centred on the mean per (station,
+  weekday, slot) computed from rows strictly before the validation boundary, so
+  the trees learn corrections instead of re-deriving a 715k-key lookup. The
+  table ships as `{horizon}min_{flow}_base.npy` and the API adds it back.
+  `metadata.json` therefore records `unknown_station_code` separately from
+  `station_codes`, which also carries live-ID bridges.
+
+`v1` artifacts remain in `data/models/v1/`. `v2` artifacts are in
+`data/models/v2/`: four boosters, four offset tables, `metadata.json`, and
+`metrics.json`.
 
 ### 5.5 Results
 
-Measured on 1,396,464 test windows at 30 min and 698,232 at 60 min, per flow:
+Measured on 1,396,464 test windows at 30 min and 698,232 at 60 min, per flow
+(`v1`, three months):
 
 | Horizon | Flow | Model MAE | Baseline MAE | Improvement | Busy-50 model | Busy-50 baseline |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
@@ -408,6 +418,21 @@ Measured on 1,396,464 test windows at 30 min and 698,232 at 60 min, per flow:
 | 30 min | arrivals | 0.408 | 0.472 | +13.4% | 1.80 | 1.89 |
 | 60 min | departures | 0.746 | 0.811 | +8.0% | 3.29 | 3.42 |
 | 60 min | arrivals | 0.740 | 0.801 | +7.5% | 3.28 | 3.36 |
+
+`v2`, on 1,294,896 and 647,448 test windows from October 2026:
+
+| Horizon | Flow | Model MAE | Baseline MAE | Improvement | Busy-50 model | Busy-50 baseline |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 30 min | departures | 0.879 | 0.896 | **+1.8%** | 3.18 | 3.26 |
+| 30 min | arrivals | 0.883 | 0.897 | **+1.6%** | 3.23 | 3.27 |
+| 60 min | departures | 1.471 | 1.468 | −0.2% | 5.81 | 5.74 |
+| 60 min | arrivals | 1.481 | 1.476 | −0.3% | 5.86 | 5.80 |
+
+The two versions are not comparable head to head: different test windows, and a
+baseline estimated from ~58 samples per key in `v2` against ~8 in `v1`. The
+60-minute loss is reported as a loss. The measured reason is that the per-key
+median — the best a calendar-only lookup can do — has 0.53% headroom at 60
+minutes against 2.79% at 30, so the features, not the model, are the limit.
 
 Reading the numbers: MAE is the average absolute error in trips per station per
 window. Lower is better. The model beats the baseline on every horizon, every
@@ -474,7 +499,9 @@ can produce empty replies.
 ### 5.8 What Sprint 1 deliberately did not do
 
 - **12-month history** — the pipeline is proven on three months; expanding is
-  bandwidth and time, not new code.
+  bandwidth and time, not new code. **Completed in Sprint 2 on 19 November
+  2026**: thirteen months, 50.5M trips, `v2` retrained and deployed. Report:
+  `reports/sprint2/REPORT.md`.
 - **PostgreSQL** — SQLite is enough for a single-writer prototype. Postgres is
   planned for Sprint 2 behind a storage abstraction, so the swap is a
   configuration change rather than a rewrite.
@@ -533,7 +560,9 @@ data/                       ignored: raw snapshots, SQLite, Parquet, models
 **Sprint 2 — integration and frontend.** React dashboard with station map,
 normal/warning/critical states, both horizons, ranked queue, station detail,
 data-freshness indicators, and a recorded replay for demo reliability. Also
-scheduled: 12-month data expansion, weather join (no leakage), PostgreSQL.
+scheduled: weather join (no leakage), PostgreSQL. The trip extension was
+completed on 19 November 2026 at thirteen months rather than twelve, with `v2`
+retrained and deployed; see `reports/sprint2/REPORT.md`.
 
 **Sprint 3 — robustness, security, evaluation.** JWT auth with roles, rate
 limiting, validation, explicit fallback to the baseline model, warning-quality
@@ -737,6 +766,30 @@ resolved. Commit hashes refer to the `main` branch.
   station state from the newest raw snapshot.
 - Removed the retention cap: all raw history is kept (~200MB/day).
 
+**19 November 2026 — Sprint 2: 13-month retrain (`v2`)**
+- Thirteen monthly archives, October 2025-October 2026: 50,472,470 trips, each
+  SHA-256 verified against S3; schema identical across 2025 and 2026.
+- Targets rebuilt in `data/processed/v2`: 40,314,384 rows at 30 minutes,
+  20,157,192 at 60; 2,130 stations; untouched test 20 October-2 November 2026.
+- The first `v2` run lost to the baseline by 12.6-14.7% on every flow. Diagnosis:
+  the model was trained with L2 (the mean) and scored with L1 (the median); the
+  per-key median scores 0.871 against the mean's 0.896 on the same rows.
+  Extrapolation and capacity were tested and ruled out first.
+- Fix: `regression_l1` objective plus a train-only per-key mean offset shipped
+  as `{horizon}min_{flow}_base.npy`, so the trees learn corrections.
+- Results: 30min 0.879/0.883 vs 0.896/0.897 (+1.8%/+1.6%, wins on the busiest
+  50 too); 60min 1.471/1.481 vs 1.468/1.476 (-0.2%/-0.3%, reported as a loss,
+  with 0.53% measured headroom explaining it).
+- Three serving/scale bugs fixed: silent `datetime64[M]` crash, offset table
+  sized below the unseen station code (live HTTP 500), and `unknown_station_code`
+  confused with the bridge-table length.
+- Live-state correction pipeline added (`live-features`, `train-live`, gated
+  serving). It cannot be fitted yet: snapshots start 12 November, trips end 31
+  October.
+- Found while building it: 19,312 indexed polls from 16 October-11 November have
+  no raw file after the host moves. Recorded as issue 29.
+- `v2` deployed; 24 tests. Report: `reports/sprint2/REPORT.md`.
+
 ### 11.2 Issue register
 
 | # | Symptom | Root cause | Fix |
@@ -766,6 +819,10 @@ resolved. Commit hashes refer to the `main` branch.
 | 23 | SSH tunnel returned empty replies | Windows resolved `localhost` to IPv6 while uvicorn bound IPv4 | Tunnel to `127.0.0.1` explicitly |
 | 24 | GitHub push returned HTTP 500 | Transient GitHub error | Retried; push succeeded |
 | 25 | Relay archive truncated | SSH connection dropped mid-stream | Transferred per day; verified file counts |
+| 26 | `session2` died silently mid-build at 13-month scale | Casting a tz-aware object array to `datetime64[M]` is undefined; the process exited without a traceback | Integer month codes from a UTC-naive index; end-to-end regression test |
+| 27 | `v2` `/queue` returned HTTP 500: `index 715835 is out of bounds` | Offset table sized by `max(station_code)`, but unseen stations map to `max + 1` | Size at the unseen code inclusive, fill unseen keys with the global mean, pad short tables on load |
+| 28 | Unseen stations scored as a category that does not exist | `len(station_codes)` used as the unknown code, but the mapping also carries live-ID bridges (4,260 vs 2,130) | `unknown_station_code` stored in metadata; test covers the unseen-station path |
+| 29 | 19,312 indexed polls have no raw file | Retired hosts were not copied fully before shutdown: 29,419 polls indexed from 16 October, 10,107 raw files present from 12 November | Nothing in Sprint 2 deleted them; archive restarts 12 November. Object storage and a post-migration checksum gate are Sprint 4 |
 
 ### 11.3 Features delivered
 
@@ -785,17 +842,25 @@ resolved. Commit hashes refer to the `main` branch.
 - Prediction log written before the target interval.
 - 24/7 collection on a Linux host with systemd restart, key-only SSH, and an SSH
   tunnel for API access.
-- 16 automated tests and lint/format checks.
+- Thirteen months of trips (50.5M) with `v2` models: L1 objective, per-key
+  offset tables, explicit unknown station code, deployed and scored against the
+  same baseline.
+- 18 automated tests and lint/format checks.
 - Documentation: project guide, eligibility rules, verification pack, host
   runbooks.
 
-### 11.4 Current status (4 November 2026)
+### 11.4 Current status (19 November 2026)
 
-- Collector: active, one poll per minute, 8,150+ snapshots, 2,518 stations.
-- API: active, snapshot age under 60s, model `v1`.
-- Database: 18MB (polls, errors, predictions).
-- Raw archive: 1.6GB on the 700GB disk, no deletion policy.
-- Sprint 1: complete with a recorded scope change; Sprint 2 backlog on the
-  GitHub project board.
+- Collector: active on the Sydney host, one poll per minute, 10,107 raw
+  snapshots (2.0GB) from 12 November, 2,519 live stations.
+- API: active, snapshot age under 60s, model `v2`.
+- Database: 18MB (polls, errors, predictions). Note: 19,312 indexed polls from
+  16 October-11 November have no raw file; see issue 29.
+- Raw archive: 2.0GB, no deletion policy.
+- Models: `v1` (3 months) retained for reference; `v2` (13 months, 50.5M trips)
+  deployed and serving. The live-state correction is implemented and gated,
+  waiting for the November trip archive.
+- Sprint 1: complete with a recorded scope change. Sprint 2: 13-month retrain
+  done; dashboard, weather, PostgreSQL and prediction retention still open.
 - Known growth item: `predictions` grows ~2,500 rows per `/queue` call; retention
   or dedup is a Sprint 2 task.

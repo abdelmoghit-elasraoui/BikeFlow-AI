@@ -142,7 +142,54 @@ contain evidence (local-only, not pushed to GitHub).
 and departure bins for twenty busiest verified stations. It is a diagnostic,
 not a complete training dataset: absent bins are not automatically zero-filled,
 historical station operating history is unknown, and ride IDs are not deduplicated.
-Forecasting, weather joins, FastAPI, and the dashboard belong to later sessions.
+
+## Sprint 2: 13-month retrain (`v2`)
+
+```sh
+# Build 13 months of targets (Oct 2025-Oct 2026) into a separate directory:
+uv run bikeflow session2 --months 202510 202511 202512 202601 202602 202603 202604 202605 202606 202607 202608 202609 202610
+
+# Train into the same targets, new version directory:
+uv run bikeflow train --version v2 --targets data/processed/v2 --months 202510 202511 202512 202601 202602 202603 202604 202605 202606 202607 202608 202609 202610
+```
+
+`v1` and `data/processed/session2/` are left untouched, so the Sprint 1
+artifacts stay reproducible. `v2` adds three things the longer history made
+necessary and possible:
+
+- **L1 objective.** MAE is minimised by the conditional median, so the model
+  is trained with `regression_l1` instead of LightGBM's default L2. Training
+  with L2 while scoring with L1 capped v2 at the per-key mean baseline.
+- **Additive per-key offset.** Each target is centred on the train-only
+  (station, weekday, slot) mean, so 31-leaf trees learn corrections rather
+  than re-deriving a 715k-key lookup table. The table ships as
+  `{horizon}min_{flow}_base.npy` and the API adds it back.
+- **Explicit unknown station code.** `station_codes` also carries live-ID
+  bridges, so its length is not the trained category count. `metadata.json`
+  now records `unknown_station_code` and the offset table covers it.
+
+The split is chronological: train before 2026-10-06, validation 6-19 October,
+untouched test 20 October-2 November.
+
+## Sprint 2: live-state features and the correction model
+
+```sh
+# Build live-state features from archived snapshots (one row per station/window):
+uv run bikeflow live-features --version v2 --start 2026-11-12 --end 2026-12-01 --horizon 30 --out data/processed/live_30min.parquet
+
+# Fit the additive correction on the overlap with the trip archive:
+uv run bikeflow train-live --version v2 --live data/processed/live_30min.parquet --horizon 30 --flow departures
+```
+
+The correction is additive on top of the calendar forecast and sees the
+station's current bikes, docks, capacity, ratios and renting flag. It is only
+loaded by the API when `live_metrics.json` marks it `enabled`, which happens
+only if the blend beats the calendar forecast on a chronological holdout inside
+the overlap. The snapshot archive (from 2026-11-12) and the trip archive (to
+2026-10-31) do not overlap yet, so `train-live` exits with that reason instead
+of fitting on nothing.
+
+
 
 ## Data sources and interpretation
 
