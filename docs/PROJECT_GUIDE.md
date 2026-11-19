@@ -44,7 +44,7 @@ Four environments are involved:
                  │                         │
                  ▼                         ▼
     ┌─────────────────────┐      ┌─────────────────────┐
-    │  VPS (Windows 10)   │      │  Mac (development)  │
+    │  VPS (Ubuntu)       │      │  Mac (development)  │
     │                     │      │                     │
     │  1. Collector       │      │  1. Trip audit      │
     │     every 60s       │      │  2. Parquet targets │
@@ -72,20 +72,20 @@ Four environments are involved:
 
 ### What runs where
 
-**VPS — two Windows scheduled tasks:**
+**VPS — two systemd services** (Ubuntu 26.04, Sydney):
 
-1. `BikeFlowCollector`
+1. `bikeflow-collector`
    ```
-   uv run bikeflow collect --count 0 --interval 60
+   /srv/bikeflow/.venv/bin/bikeflow collect --count 0 --interval 60
    ```
    Every ~60 seconds: download GBFS discovery, station information, and
-   station status; write a compressed raw snapshot; insert rows into SQLite;
-   log one JSON line to `C:\BikeFlow\data\collect.log`.
+   station status; write a compressed raw snapshot to `/data/gbfs`; insert a
+   row into SQLite; log one JSON line to journald.
 
-2. `BikeFlowAPI`
+2. `bikeflow-api`
    ```
-   bikeflow.exe --data-dir C:\BikeFlow\data serve --version v1 \
-     --models C:\BikeFlow\data\models --host 127.0.0.1 --port 8000
+   /srv/bikeflow/.venv/bin/bikeflow serve --version v1 \
+     --host 127.0.0.1 --port 8000
    ```
    Loads the four LightGBM models, reads the newest snapshot, serves JSON
    endpoints, and writes every forecast to the `predictions` table.
@@ -467,15 +467,17 @@ which forwards `localhost:8000` on the Mac to port 8000 on the VPS over SSH.
 This keeps the unauthenticated prototype off the public internet. JWT,
 rate limiting, input validation, and public deployment are Sprint 3/4 work.
 
-On Windows, use `127.0.0.1` rather than `localhost` in the tunnel: the latter
-resolves to IPv6 first while uvicorn binds IPv4, which produces empty replies.
+Always use `127.0.0.1` rather than `localhost` in the tunnel: the tunnel binds
+both stacks, but the API listens on IPv4 only, so an IPv6-first `localhost`
+can produce empty replies.
 
 ### 5.8 What Sprint 1 deliberately did not do
 
 - **12-month history** — the pipeline is proven on three months; expanding is
   bandwidth and time, not new code.
 - **PostgreSQL** — SQLite is enough for a single-writer prototype. Postgres is
-  planned for Sprint 3/4 with predictions and evaluation tables.
+  planned for Sprint 2 behind a storage abstraction, so the swap is a
+  configuration change rather than a rewrite.
 - **Weather join** — planned, with a strict rule to use only forecast runs
   available at prediction time.
 - **Poisson baseline** — only worth adding if it informs the comparison; the
@@ -563,7 +565,7 @@ the proposal states.
   historical demand source.
 - **GitHub** — source control and code hosting. Holds source, tests, and docs.
   It never holds raw data, databases, models, or secrets.
-- **The VPS** (Virtual Private Server) — a rented Windows machine in a data
+- **The VPS** (Virtual Private Server) — a rented Ubuntu machine in a data
   centre that stays on. Runs collection and the API.
 
 ### Python tools

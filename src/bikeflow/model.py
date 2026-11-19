@@ -7,9 +7,9 @@ data/models/<version>/ (gitignored).
 Leakage rules:
 - Chronological split only: train < VAL_START, validation < TEST_START,
   untouched test from TEST_START. TEST_START matches baseline v0 (final 14 days).
-- Lag features are strict past values (same station, same wall-clock slot 1 day
-  and 7 days earlier), loaded from the full table but only from timestamps
-  before the row's own window.
+- No lag features: only ~5 days of archived snapshots existed when v1 was
+  trained, so a lag would be a train-only artifact serving could not
+  reproduce. They return once the raw archive is long enough.
 - Preprocessing (station category mapping) is fit on training rows only.
 """
 
