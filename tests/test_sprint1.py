@@ -223,6 +223,8 @@ def test_api_serves_a_model_with_weather_features(tiny_dataset, tiny_weather, tm
         live[name] = np.float32(10.0)
     live["is_precipitating"] = 0
     live["is_cold"] = 0
+    live["rain_last_3h"] = np.float32(0.0)
+    live["temp_anomaly_30d"] = np.float32(0.0)
     (data_dir / "weather").mkdir(parents=True)
     live[["weather_hour", *WEATHER_FEATURES]].to_parquet(
         data_dir / "weather" / "live_forecast.parquet", index=False

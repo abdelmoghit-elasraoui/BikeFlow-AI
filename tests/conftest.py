@@ -52,11 +52,16 @@ def tiny_weather(tmp_path):
         "cloud_cover": 30.0,
         "snow_depth": 0.0,
         "visibility": 18000.0,
+        "wind_gusts_10m": 14.0,
+        "dew_point_2m": 6.0,
+        "snowfall": 0.0,
     }
     for name in RAW_FEATURES:
         frame[name] = np.float32(values[name])
     frame["is_precipitating"] = 0
     frame["is_cold"] = 0
+    frame["rain_last_3h"] = np.float32(0.0)
+    frame["temp_anomaly_30d"] = np.float32(0.0)
     frame = frame[["weather_hour", *WEATHER_FEATURES]]
     for month in ("202601", "202602", "202603"):
         frame.to_parquet(directory / f"forecast_{month}.parquet", index=False)

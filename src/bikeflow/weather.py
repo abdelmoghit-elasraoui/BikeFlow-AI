@@ -30,7 +30,7 @@ LIVE_URL = "https://api.open-meteo.com/v1/forecast"
 NEW_YORK = {"latitude": 40.7306, "longitude": -73.9352}
 # Kept small on purpose: each column costs 160MB over 40M rows. These are the
 # variables that move bike demand: temperature, rain, wind, sun, visibility.
-RAW_FEATURES = [
+BASE_FEATURES = [
     "temperature_2m",
     "apparent_temperature",
     "precipitation",
@@ -40,7 +40,17 @@ RAW_FEATURES = [
     "snow_depth",
     "visibility",
 ]
-DERIVED_FEATURES = ["is_precipitating", "is_cold"]
+EXTENDED_FEATURES = ["wind_gusts_10m", "dew_point_2m", "snowfall"]
+# Derived from the series: rain that fell before the window and how unusual the
+# temperature is for the season. Raw temperature says it is 8C; the anomaly says
+# whether that is normal for the date.
+DERIVED_FEATURES = [
+    "is_precipitating",
+    "is_cold",
+    "rain_last_3h",
+    "temp_anomaly_30d",
+]
+RAW_FEATURES = [*BASE_FEATURES, *EXTENDED_FEATURES]
 WEATHER_FEATURES = [*RAW_FEATURES, *DERIVED_FEATURES]
 COLD_CELSIUS = 5.0
 
@@ -69,13 +79,25 @@ def _frame_from_payload(payload):
         if name not in frame:
             frame[name] = np.nan
         frame[name] = pd.to_numeric(frame[name], errors="coerce").astype("float32")
+    frame = frame.sort_values("weather_hour").reset_index(drop=True)
     frame["is_precipitating"] = (frame["precipitation"].fillna(0) > 0).astype("int8")
     frame["is_cold"] = (frame["apparent_temperature"] < COLD_CELSIUS).astype("int8")
-    return (
-        frame[["weather_hour", *RAW_FEATURES, *DERIVED_FEATURES]]
-        .sort_values("weather_hour")
-        .reset_index(drop=True)
-    )
+    return frame[["weather_hour", *RAW_FEATURES, "is_precipitating", "is_cold"]]
+
+
+def _add_rolling(frame):
+    """Antecedent rain and the 30-day temperature anomaly.
+
+    Computed after the months are concatenated: doing it per month would reset
+    the window at every boundary and blank the first week of each month.
+    """
+    frame = frame.sort_values("weather_hour").reset_index(drop=True)
+    frame["rain_last_3h"] = (
+        frame["precipitation"].rolling(3, min_periods=1).sum().shift(1).fillna(0)
+    ).astype("float32")
+    trailing = frame["temperature_2m"].rolling(720, min_periods=168).mean()
+    frame["temp_anomaly_30d"] = (frame["temperature_2m"] - trailing).astype("float32")
+    return frame
 
 
 def fetch_month(year, month, cache_dir, fetcher=None):
@@ -120,6 +142,8 @@ def load(start, end, cache_dir, fetcher=None):
         frames.append(fetch_month(year, month, cache_dir, fetcher))
     frame = pd.concat(frames, ignore_index=True)
     frame = frame.drop_duplicates("weather_hour").sort_values("weather_hour")
+    frame = _add_rolling(frame)
+    frame = frame[["weather_hour", *RAW_FEATURES, *DERIVED_FEATURES]]
     log(
         f"Weather: {len(frame):,} hours from {frame.weather_hour.min()} "
         f"to {frame.weather_hour.max()}"
@@ -139,12 +163,25 @@ def add_weather_features(frame, weather):
     missing = positions < 0
     safe = np.maximum(positions, 0)
     for name in RAW_FEATURES:
-        values = weather[name].to_numpy(np.float32)[safe].copy()
+        if name in weather:
+            values = weather[name].to_numpy(np.float32)[safe].copy()
+        else:
+            # An older live archive can lack the extended columns; serving a
+            # model without them is better than failing the request.
+            values = np.full(len(frame), np.nan, dtype=np.float32)
         if missing.any():
             values[missing] = np.nan
         frame[name] = values
     frame["is_precipitating"] = (frame["precipitation"].fillna(0) > 0).astype("int8")
     frame["is_cold"] = (frame["apparent_temperature"] < COLD_CELSIUS).astype("int8")
+    for name in ("rain_last_3h", "temp_anomaly_30d"):
+        if name in weather:
+            values = weather[name].to_numpy(np.float32)[safe].copy()
+            if missing.any():
+                values[missing] = np.nan
+        else:
+            values = np.full(len(frame), np.nan, dtype=np.float32)
+        frame[name] = values
     log(f"Weather: joined {len(frame):,} windows, {int(missing.sum()):,} without a forecast")
     return frame
 
@@ -169,6 +206,8 @@ def fetch_live(cache_dir, fetcher=None):
         frame = _frame_from_payload(_request_json(f"{LIVE_URL}?{query}"))
     else:
         frame = fetcher()
+    if "rain_last_3h" not in frame:
+        frame = _add_rolling(frame)
     path = cache_dir / "live_forecast.parquet"
     cache_dir.mkdir(parents=True, exist_ok=True)
     frame.to_parquet(path, index=False)
