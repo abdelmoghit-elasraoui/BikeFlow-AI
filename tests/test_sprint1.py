@@ -262,3 +262,34 @@ def test_training_with_holiday_and_station_groups(tiny_dataset, tmp_path):
     assert "latitude" in metadata["feature_columns"]
     assert metadata["station_context"]
     assert metadata["weather"] is None
+
+
+def test_shrinkage_prefers_the_offset_table_when_the_correction_is_noise():
+    from bikeflow.model import fit_shrinkage
+
+    base = np.zeros(100)
+    # The correction points the wrong way at double the true error.
+    residual = np.full(100, 2.0)
+    truth = np.full(100, -1.0)
+    assert fit_shrinkage(base, residual, truth) == 0.0
+
+
+def test_median_offset_is_the_l1_optimum_per_key():
+    from bikeflow.model import per_row_key_offset
+
+    frame = pd.DataFrame(
+        {
+            "station_code": pd.Series([0] * 6, dtype="int32"),
+            "weekday": pd.Series([0] * 6, dtype="int8"),
+            "minute_slot": pd.Series([0] * 6, dtype="int16"),
+            "hour": pd.Series([0] * 6, dtype="int8"),
+            "window_start_utc": pd.DatetimeIndex(
+                ["2026-01-0%d 00:00:00+00:00" % day for day in range(1, 7)]
+            ),
+            "departures": [0, 1, 1, 1, 2, 20],
+        }
+    )
+    mean_base, _ = per_row_key_offset(frame, 30, "2026-01-07", "departures", "mean")
+    median_base, _ = per_row_key_offset(frame, 30, "2026-01-07", "departures", "median")
+    assert median_base[0] == 1.0
+    assert mean_base[0] > median_base[0]

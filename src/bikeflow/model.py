@@ -77,14 +77,18 @@ def utc_naive(values):
     return index.to_numpy()
 
 
-def per_row_key_mean(frame, horizon, cutoff, flow):
-    """(station, weekday, slot) mean from rows before cutoff, as a flat array.
+def per_row_key_offset(frame, horizon, cutoff, flow, statistic="mean"):
+    """(station, weekday, slot) offset from rows before cutoff, as a flat array.
 
     Integer key arithmetic instead of a MultiIndex: a 40M-row tuple index
-    costs gigabytes, while ``station_code * 336 + weekday * 48 + slot`` fits
-    bincount in a few megabytes. Used as the additive offset the model fits
-    a correction to, so it does not spend its leaves re-learning a lookup
-    table it can be handed directly.
+    costs gigabytes, while ``station_code * 336 + weekday * 48 + slot`` fits a
+    lookup table in a few megabytes. The offset is what the trees fit a
+    correction to, so they do not spend their leaves re-deriving a level they
+    can be handed directly.
+
+    ``statistic="median"`` is the L1-optimal constant per key. Computing it
+    costs one lexsort over the training rows (~20s per flow) and returns the
+    lower median, which is what MAE scores.
     """
     stations = int(frame.station_code.max()) + 2  # +1 unseen code, +1 inclusive
     width = stations * 7 * 48
@@ -96,14 +100,44 @@ def per_row_key_mean(frame, horizon, cutoff, flow):
     key = frame.station_code.to_numpy(np.int64) * 336 + frame.weekday.to_numpy(np.int64) * 48 + slot
     mask = utc_naive(frame.window_start_utc) < pd.Timestamp(cutoff).to_datetime64()
     values = frame[flow].to_numpy(np.float64)
-    totals = np.bincount(key[mask], weights=values[mask], minlength=width)
-    counts = np.bincount(key[mask], minlength=width).astype(np.float64)
-    overall = float(values[mask].mean())
-    # Unseen keys fall back to the global mean, in the table as well: serving
-    # reads the table directly, so a zero there would silently drop the level.
-    means = np.divide(totals, counts, out=np.full(width, overall), where=counts > 0)
-    base = means[key]
-    return base.astype(np.float32), means.astype(np.float32)
+    if statistic == "mean":
+        totals = np.bincount(key[mask], weights=values[mask], minlength=width)
+        counts = np.bincount(key[mask], minlength=width).astype(np.float64)
+        overall = float(values[mask].mean())
+        table = np.divide(totals, counts, out=np.full(width, overall), where=counts > 0)
+    elif statistic == "median":
+        keys = key[mask]
+        targets = values[mask]
+        order = np.lexsort((targets, keys))
+        sorted_keys = keys[order]
+        sorted_values = targets[order]
+        unique, starts, counts = np.unique(sorted_keys, return_index=True, return_counts=True)
+        table = np.full(width, float(np.median(targets)), dtype=np.float64)
+        table[unique] = sorted_values[starts + (counts - 1) // 2]
+        del order, sorted_keys, sorted_values
+    else:
+        raise ValueError(f"Unknown offset statistic {statistic!r}")
+    base = table[key]
+    return base.astype(np.float32), table.astype(np.float32)
+
+
+def per_row_key_mean(frame, horizon, cutoff, flow):
+    """Mean offset, kept for the diagnostics and for older callers."""
+    return per_row_key_offset(frame, horizon, cutoff, flow, statistic="mean")
+
+
+def fit_shrinkage(base, residual, truth, step=0.05, maximum=1.5):
+    """Weight on the correction that minimises validation MAE.
+
+    Zero is the offset table alone and one is the unmodified model, so the
+    result can only match or beat both on the rows it was fitted on.
+    """
+    best_lambda, best_mae = 1.0, float("inf")
+    for weight in np.arange(0.0, maximum + step / 2, step):
+        score = float(np.abs(base + weight * residual - truth).mean())
+        if score < best_mae:
+            best_lambda, best_mae = float(weight), score
+    return best_lambda
 
 
 def train_one(horizon, flow, frame, val_start, test_start, params, base, features):
@@ -191,6 +225,8 @@ def run_training(
     weather_cache=Path("data/raw/weather"),
     feature_groups=None,
     trees=600,
+    offset_statistic="mean",
+    calibrate=True,
 ):
     """Train 4 models, compare against baseline v0, write artifacts + metrics."""
     out_dir, models_dir = Path(out_dir), Path(models_dir)
@@ -236,6 +272,7 @@ def run_training(
         "objective": "regression_l1",
     }
     metrics = {"generated_at": utc_now(), "version": version, "horizons": {}}
+    calibration = {}
     dataset_hash = hashlib.sha256()
     station_mapping = {}
     unknown_code = 0
@@ -305,15 +342,36 @@ def run_training(
             # Offset uses train rows only, so val and test see a mean the
             # model never fitted on. The table ships with the booster: the
             # saved model predicts the correction, not the level.
-            base, key_means = per_row_key_mean(frame, horizon, val_start, flow)
+            base, key_means = per_row_key_offset(
+                frame, horizon, val_start, flow, statistic=offset_statistic
+            )
             np.save(version_dir / f"{horizon}min_{flow}_base.npy", key_means)
             booster, test = train_one(
                 horizon, flow, frame, val_start, test_start, params, base, feature_names
             )
-            del base, key_means
+            # Shrinkage is fitted on validation, never on test: the shipped
+            # forecast is base + lambda * correction, and lambda = 0 is the
+            # offset table, so calibration cannot make the model worse than
+            # the level it started from.
+            val_mask = (
+                utc_naive(frame.window_start_utc) >= pd.Timestamp(val_start).to_datetime64()
+            ) & (utc_naive(frame.window_start_utc) < pd.Timestamp(test_start).to_datetime64())
+            residual = booster.predict(frame.loc[val_mask, feature_names])
+            shrinkage = 1.0
+            if calibrate:
+                shrinkage = fit_shrinkage(
+                    base[val_mask],
+                    residual,
+                    frame.loc[val_mask, flow].to_numpy(np.float64),
+                )
+            calibration.setdefault(f"{horizon}min", {})[flow] = float(shrinkage)
+            log(f"Model {horizon}min {flow}: shrinkage {shrinkage:.2f}")
+            del base, key_means, residual
             model_path = version_dir / f"{horizon}min_{flow}.txt"
             booster.booster_.save_model(str(model_path))
-            model_pred = booster.predict(test[feature_names]) + test.base.to_numpy()
+            model_pred = test.base.to_numpy() + calibration[f"{horizon}min"][
+                flow
+            ] * booster.predict(test[feature_names])
             base_pred = pd.Series(
                 [
                     baselines[flow].get((str(s), int(wd), int(slot)), 0.0)
@@ -366,6 +424,7 @@ def run_training(
         "targets_dir": str(out_dir),
         "feature_columns": feature_names,
         "feature_groups": list(feature_groups),
+        "calibration": calibration,
         "station_context": station_context_meta,
         "weather": (
             {

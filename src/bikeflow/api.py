@@ -119,6 +119,7 @@ def create_app(models_dir, data_dir):
     metadata = json.loads((models_dir / "metadata.json").read_text())
     station_codes = metadata.get("station_codes", {})
     model_features = metadata.get("feature_columns") or feature_columns()
+    calibration = metadata.get("calibration", {})
     feature_groups = metadata.get("feature_groups") or (
         ["calendar", "weather"] if metadata.get("weather") else ["calendar"]
     )
@@ -186,11 +187,13 @@ def create_app(models_dir, data_dir):
         frame = build_feature_groups(frame, feature_groups, weather=weather, context=context_frame)
         predictions = {}
         for flow in ("departures", "arrivals"):
-            raw = models[(horizon, flow)].predict(frame[model_features])
+            correction = models[(horizon, flow)].predict(frame[model_features])
+            # Shrinkage is fitted on validation; 1.0 reproduces the raw model.
+            weight = calibration.get(f"{horizon}min", {}).get(flow, 1.0)
             table = base_tables.get((horizon, flow))
             if table is not None:
-                # The booster predicts the correction around the per-key mean,
-                # so the level has to be added back here.
+                # The booster predicts the correction around the per-key
+                # offset, so the level has to be added back here.
                 slot = (
                     frame.minute_slot.to_numpy(np.int64) // 30
                     if horizon == 30
@@ -201,7 +204,9 @@ def create_app(models_dir, data_dir):
                     + frame.weekday.to_numpy(np.int64) * 48
                     + slot
                 )
-                raw = raw + table[key]
+                raw = table[key] + weight * correction
+            else:
+                raw = weight * correction
             correction = live_models.get((horizon, flow))
             if correction is not None:
                 # The correction sees the calendar forecast and the state of
