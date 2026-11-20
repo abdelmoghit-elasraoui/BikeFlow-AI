@@ -498,8 +498,9 @@ median offset and validation shrinkage:
 | 60 min | arrivals | 1.433 | 1.402 | 1.476 | +5.0% |
 
 Shrinkage reached its 1.5 cap on all four models, so validation wanted more
-correction than the trees produced: the next step is capacity (the tree cap),
-not more features.
+correction than the trees produced. Retraining with 1,200 trees (`v5`) improved
+60 minutes to 1.389/1.394 and brought their weights off the cap (1.40/1.35);
+30-minute departures was already early-stopped at 172 trees and is unchanged.
 
 Reading the numbers: MAE is the average absolute error in trips per station per
 window. Lower is better. The model beats the baseline on every horizon, every

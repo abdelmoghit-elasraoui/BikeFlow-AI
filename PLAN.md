@@ -169,6 +169,11 @@ shrinkage. On the same test rows: 30 minutes 0.866/0.865 (baseline
 0.896/0.897), 60 minutes 1.398/1.402 (baseline 1.468/1.476). Deployed. The
 shrinkage cap was reached, which is the case for raising the tree cap next.
 
+**Capacity check (`v5`), 20 November 2026.** 1,200 trees on the same features:
+60 minutes 1.389/1.394 (baseline 1.468/1.476), and the shrinkage weights fell
+from the 1.5 cap to 1.40/1.35, which confirms the underfitting diagnosis.
+30-minute departures was already early-stopped and is unchanged.
+
 **Live-state correction, 19 November 2026.** The additive model, its feature
 builder (`live-features`), trainer (`train-live`) and a promotion gate are
 implemented, and the API loads a correction only when the gate enables it. It is

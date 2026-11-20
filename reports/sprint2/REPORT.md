@@ -244,6 +244,29 @@ Two caveats, both worth stating before someone else finds them:
   holidays or the station context contributed. An ablation would, and is the
   next measurement after the capacity run.
 
+### Capacity check (`v5`)
+
+v4's shrinkage weight sat on its 1.5 cap, so the same features were retrained
+with 1,200 trees:
+
+| Horizon | Flow | `v4` | `v5` | Change | `v5` λ | Trees used |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 30 min | departures | 0.866 | 0.866 | 0.0% | 1.50 | 172 (early stop) |
+| 30 min | arrivals | 0.865 | **0.862** | −0.4% | 1.50 | 1,171 |
+| 60 min | departures | 1.398 | **1.389** | −0.6% | 1.40 | 1,199 |
+| 60 min | arrivals | 1.402 | **1.394** | −0.6% | 1.35 | 1,200 |
+
+The diagnosis held: the 60-minute models used the extra capacity, and their
+shrinkage came off the cap (1.40/1.35). The 30-minute departures model had
+already early-stopped at 172, so more trees change nothing. The 30-minute
+arrivals model used 1,171 trees and still wants amplification, so it is the one
+model with capacity left — a third data point that the remaining error there is
+not capacity-shaped.
+
+Gains of 0.4–0.6% on a single 14-day window are inside the noise. The evidence
+that this is real is the mechanism: the shrinkage weight moved exactly where
+the trees used the extra capacity.
+
 ## Comparison with `v1`
 
 The two versions are not comparable head to head — different test windows and
