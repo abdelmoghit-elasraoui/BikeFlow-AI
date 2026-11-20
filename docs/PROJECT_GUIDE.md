@@ -424,6 +424,28 @@ plus `is_precipitating` and `is_cold`.
 - `metadata.json` lists the feature columns and the weather source, variables,
   cache path and a digest of the weather frame.
 
+**Feature groups (`v4`).** `features.py` defines named groups and one `build()`
+used by training and serving:
+
+| Group | Columns | Source |
+| --- | --- | --- |
+| `calendar` | station code, weekday, hour, minute slot, weekend, day of year | target timestamps |
+| `weather` | 11 hourly variables plus 4 derived (rain in the last 3h, 30-day temperature anomaly, precipitating, cold) | Open-Meteo archived forecast |
+| `holiday` | federal holiday, day before, day after | computed locally |
+| `station` | latitude, longitude, stations within 500m | verified mapping |
+
+The group list and column order are stored in metadata, and serving rebuilds the
+same matrix from the live weather archive and the stored station context.
+
+Two calibration changes ship with `v4`:
+
+- **Median offset.** The per-key constant is the median instead of the mean,
+  because MAE is minimised by the conditional median. One lexsort over the
+  training rows, about 20 seconds per flow.
+- **Shrinkage.** A weight on the correction is fitted on validation; zero is the
+  offset table alone, one is the unmodified model. The reported test metrics
+  include the fitted weight, so calibration cannot flatter the comparison.
+
 ### 5.5 Results
 
 Measured on 1,396,464 test windows at 30 min and 698,232 at 60 min, per flow
