@@ -487,6 +487,20 @@ the signal, and turns 60 minutes from a loss into a win. On the busiest 50
 stations the 60-minute MAE falls from 5.81/5.86 to 5.39 against a 5.74/5.80
 baseline.
 
+`v4` adds holidays, station context, five more weather signals, the per-key
+median offset and validation shrinkage:
+
+| Horizon | Flow | `v3` | `v4` | Baseline | `v4` vs baseline |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 30 min | departures | 0.877 | 0.866 | 0.896 | +3.3% |
+| 30 min | arrivals | 0.876 | 0.865 | 0.897 | +3.6% |
+| 60 min | departures | 1.425 | 1.398 | 1.468 | +4.8% |
+| 60 min | arrivals | 1.433 | 1.402 | 1.476 | +5.0% |
+
+Shrinkage reached its 1.5 cap on all four models, so validation wanted more
+correction than the trees produced: the next step is capacity (the tree cap),
+not more features.
+
 Reading the numbers: MAE is the average absolute error in trips per station per
 window. Lower is better. The model beats the baseline on every horizon, every
 flow, and on the 50 busiest stations — the ones that matter most operationally.

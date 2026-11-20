@@ -210,6 +210,40 @@ so the next measured step is raising the cap rather than adding features.
 Caveat: one 14-day window, and weather is autocorrelated, so the 60-minute gain
 should be confirmed on rolling windows before it is treated as settled.
 
+## Feature groups and calibration (`v4`)
+
+The feature layer is now declarative: named groups (`calendar`, `weather`,
+`holiday`, `station`) build one matrix for training and the API rebuilds the
+same one at serving from metadata. `v4` adds federal holidays (and the day
+before and after), station coordinates and density, five more weather signals
+(gusts, dew point, snowfall, rain in the previous three hours, 30-day
+temperature anomaly), the **per-key median** offset, and a shrinkage weight
+fitted on validation.
+
+Same split and test rows:
+
+| Horizon | Flow | `v3` | `v4` | Change | Baseline | `v4` vs baseline |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 30 min | departures | 0.877 | **0.866** | −1.2% | 0.896 | **+3.3%** |
+| 30 min | arrivals | 0.876 | **0.865** | −1.2% | 0.897 | **+3.6%** |
+| 60 min | departures | 1.425 | **1.398** | −1.9% | 1.468 | **+4.8%** |
+| 60 min | arrivals | 1.433 | **1.402** | −2.1% | 1.476 | **+5.0%** |
+
+Against the original `v2` on the same rows, 60-minute departures fall from
+1.471 to 1.398 (−5.0%) and arrivals from 1.481 to 1.402 (−5.3%).
+
+Two caveats, both worth stating before someone else finds them:
+
+- **Shrinkage hit its 1.5 cap on all four models**, meaning validation wanted to
+  amplify the correction further. That is a capacity signal: the models are
+  underfitting, and the next lever is the tree cap, not more features.
+- **At 30 minutes the busiest 50 stations are level with the baseline**
+  (3.26/3.24 against 3.26/3.27), even though the overall MAE improves. The
+  median offset and calibration help the average more than the peak.
+- The groups were added together, so this does not isolate how much the
+  holidays or the station context contributed. An ablation would, and is the
+  next measurement after the capacity run.
+
 ## Comparison with `v1`
 
 The two versions are not comparable head to head — different test windows and

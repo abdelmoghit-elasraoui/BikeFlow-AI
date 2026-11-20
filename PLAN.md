@@ -163,6 +163,12 @@ every 30 minutes for serving. On the same split and test rows, 30 minutes barely
 moves (0.877/0.876 against 0.879/0.883) and 60 minutes goes from 0.2% behind the
 baseline to 2.9% ahead (1.425/1.432). Deployed as model `v3`.
 
+**Feature groups and calibration (`v4`), 20 November 2026.** Holidays, station
+context, five more weather signals, the per-key median offset and validation
+shrinkage. On the same test rows: 30 minutes 0.866/0.865 (baseline
+0.896/0.897), 60 minutes 1.398/1.402 (baseline 1.468/1.476). Deployed. The
+shrinkage cap was reached, which is the case for raising the tree cap next.
+
 **Live-state correction, 19 November 2026.** The additive model, its feature
 builder (`live-features`), trainer (`train-live`) and a promotion gate are
 implemented, and the API loads a correction only when the gate enables it. It is

@@ -18,10 +18,10 @@ cd ~/Desktop/bikeflow && .venv/bin/python -m pytest -q 2>&1 | tail -2
 ```
 
 ```sh
-ls -lh data/models/v1 data/models/v2 data/models/v3
+ls -lh data/models/v1 data/models/v2 data/models/v3 data/models/v4
 ```
 
-Want: `"status":"ok"` and `"model_version":"v3"`, `"stale":false`, `32 passed`,
+Want: `"status":"ok"` and `"model_version":"v4"`, `"stale":false`, `41 passed`,
 four boosters of ~400KB in `v1`, 2.5–3.4MB in `v2` and 3.4–3.6MB in `v3` (the
 30-minute models use all 600 trees), plus four `*_base.npy` offset tables and
 `data/weather/live_forecast.parquet`.
@@ -148,7 +148,7 @@ Say: the dataset hash is stored inside the artifact, so any model traces back
 to the exact frame that produced it. 4,234 codes = 2,117 trip-station
 categories + 2,117 live GBFS bridges; that is exactly why `v2` records
 `unknown_station_code` separately, since the mapping length is not the category
-count. Thirty-two tests cover the API contract, prediction logging, unseen
+count. Forty-one tests cover the API contract, prediction logging, unseen
 stations, and training invariants — including `issued < target`.
 
 ---
@@ -163,9 +163,9 @@ stations, and training invariants — including `issued < target`.
 | Target rows, 30 min / 60 min | 9,150,816 / 4,575,408 (`v1`) · 40,314,384 / 20,157,192 (`v2`) |
 | Held-out test windows per flow | 1,396,464 / 698,232 (`v1`) · 1,294,896 / 647,448 (`v2`) |
 | Split boundary | `v1`: train < 2 Feb · val 2–15 Feb · test 16–28 Feb 2026. `v2`: train < 6 Oct · val 6–19 Oct · test 20 Oct–2 Nov 2026 |
-| MAE 30 min dep / arr | `v1` 0.412 / 0.408 (baseline 0.478 / 0.472) · `v2` 0.879 / 0.883 · `v3` **0.877 / 0.876** (baseline 0.896 / 0.897) |
-| MAE 60 min dep / arr | `v1` 0.746 / 0.740 (baseline 0.811 / 0.801) · `v2` 1.471 / 1.481 · `v3` **1.425 / 1.432** (baseline 1.468 / 1.476) |
-| Improvement | `v1` +13.8% / +13.4% · +8.0% / +7.5% — `v2` +1.8% / +1.6% · −0.2% / −0.3% — `v3` +2.1% / +2.4% · +2.9% / +3.0% |
+| MAE 30 min dep / arr | `v1` 0.412 / 0.408 (baseline 0.478 / 0.472) · `v2` 0.879 / 0.883 · `v3` 0.877 / 0.876 · `v4` **0.866 / 0.865** (baseline 0.896 / 0.897) |
+| MAE 60 min dep / arr | `v1` 0.746 / 0.740 (baseline 0.811 / 0.801) · `v2` 1.471 / 1.481 · `v3` 1.425 / 1.432 · `v4` **1.398 / 1.402** (baseline 1.468 / 1.476) |
+| Improvement | `v2` +1.8% / +1.6% · −0.2% / −0.3% — `v3` +2.1% / +2.4% · +2.9% / +3.0% — `v4` +3.3% / +3.6% · +4.8% / +5.0% |
 | Best iteration | `v1` 72–75 of 600 · `v2` 600 / 600 at 30 min, 61 / 71 at 60 min |
 | Per-key median headroom | 2.79% at 30 min, 0.53% at 60 min |
 | Live stations / polls / raw | 2,519 / 19.4k / 3.8GB |
@@ -294,20 +294,19 @@ both an accepted and a rejected candidate.
 
 ## 7. The weakness — say it before he finds it
 
-On what is deployed (`v3`):
+On what is deployed (`v4`):
 
-> "Two limitations worth flagging. First, at 30 minutes weather buys almost
-> nothing: 0.877 against 0.879. The daily shape is already in the calendar
-> features, and a 14-day window does not carry enough weather variation to move
-> it.
+> "Two limitations worth flagging. First, the calibration wants to amplify the
+> model 1.5x, which is the cap — a capacity signal, not a tuning win. The trees
+> are underfitting and the next lever is the tree cap.
 >
-> Second, the offset table is the per-key mean, but with an L1 objective the
-> optimal per-key constant is the median. That is worth up to 2.8% at 30
-> minutes on held-out rows. I measured it and left it as the next experiment
-> rather than change the model at the end of the sprint.
+> Second, at 30 minutes the busiest 50 stations are level with the baseline
+> (3.26/3.24 against 3.26/3.27) even though the overall MAE improves. The median
+> offset and shrinkage help the average more than the peak, and the peak is
+> where a dispatcher works.
 >
-> The 60-minute gap I flagged in `v2` is closed: weather took it from 0.2%
-> behind the baseline to 2.9% ahead, on the same rows."
+> The 60-minute gap I flagged in `v2` is closed and then some: 1.398/1.402
+> against a 1.468/1.476 baseline, +4.8%/+5.0%."
 
 On `v1`, if he asks why the older artifact is still there:
 
