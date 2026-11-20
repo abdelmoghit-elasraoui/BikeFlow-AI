@@ -44,6 +44,15 @@ def main():
     )
     train.add_argument("--weather-cache", type=Path, default=Path("data/raw/weather"))
     train.add_argument(
+        "--feature-groups",
+        nargs="+",
+        default=None,
+        help="calendar weather holiday station (defaults from --weather)",
+    )
+    train.add_argument("--trees", type=int, default=600)
+    train.add_argument("--offset", choices=("mean", "median"), default="mean")
+    train.add_argument("--no-calibration", action="store_true")
+    train.add_argument(
         "--mapping",
         type=Path,
         default=Path("reports/first-session/station_mapping.csv"),
@@ -120,6 +129,10 @@ def main():
                     args.months,
                     weather=args.weather,
                     weather_cache=args.weather_cache,
+                    feature_groups=args.feature_groups,
+                    trees=args.trees,
+                    offset_statistic=args.offset,
+                    calibrate=not args.no_calibration,
                 ),
                 indent=2,
                 default=str,

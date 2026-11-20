@@ -223,6 +223,8 @@ def test_api_serves_a_model_with_weather_features(tiny_dataset, tiny_weather, tm
         live[name] = np.float32(10.0)
     live["is_precipitating"] = 0
     live["is_cold"] = 0
+    live["rain_last_3h"] = np.float32(0.0)
+    live["temp_anomaly_30d"] = np.float32(0.0)
     (data_dir / "weather").mkdir(parents=True)
     live[["weather_hour", *WEATHER_FEATURES]].to_parquet(
         data_dir / "weather" / "live_forecast.parquet", index=False
@@ -232,3 +234,62 @@ def test_api_serves_a_model_with_weather_features(tiny_dataset, tiny_weather, tm
     response = client.get("/forecasts/a?horizon=30")
     assert response.status_code == 200, response.text
     assert response.json()["forecast_departures"] >= 0
+
+
+def test_training_with_holiday_and_station_groups(tiny_dataset, tmp_path):
+    mapping = tmp_path / "mapping.csv"
+    pd.DataFrame(
+        {
+            "trip_station_id": ["a", "b"],
+            "trip_name": ["A", "B"],
+            "trip_lat_mean": [40.0, 40.02],
+            "trip_lon_mean": [-73.0, -73.0],
+            "gbfs_station_id": ["la", "lb"],
+            "mapping_status": ["matched", "matched"],
+        }
+    ).to_csv(mapping, index=False)
+    result = run_training(
+        tiny_dataset,
+        tmp_path / "models",
+        "vg",
+        months=("tiny",),
+        mapping_path=mapping,
+        feature_groups=["calendar", "holiday", "station"],
+    )
+    metadata = result["metadata"]
+    assert metadata["feature_groups"] == ["calendar", "holiday", "station"]
+    assert "is_holiday" in metadata["feature_columns"]
+    assert "latitude" in metadata["feature_columns"]
+    assert metadata["station_context"]
+    assert metadata["weather"] is None
+
+
+def test_shrinkage_prefers_the_offset_table_when_the_correction_is_noise():
+    from bikeflow.model import fit_shrinkage
+
+    base = np.zeros(100)
+    # The correction points the wrong way at double the true error.
+    residual = np.full(100, 2.0)
+    truth = np.full(100, -1.0)
+    assert fit_shrinkage(base, residual, truth) == 0.0
+
+
+def test_median_offset_is_the_l1_optimum_per_key():
+    from bikeflow.model import per_row_key_offset
+
+    frame = pd.DataFrame(
+        {
+            "station_code": pd.Series([0] * 6, dtype="int32"),
+            "weekday": pd.Series([0] * 6, dtype="int8"),
+            "minute_slot": pd.Series([0] * 6, dtype="int16"),
+            "hour": pd.Series([0] * 6, dtype="int8"),
+            "window_start_utc": pd.DatetimeIndex(
+                ["2026-01-0%d 00:00:00+00:00" % day for day in range(1, 7)]
+            ),
+            "departures": [0, 1, 1, 1, 2, 20],
+        }
+    )
+    mean_base, _ = per_row_key_offset(frame, 30, "2026-01-07", "departures", "mean")
+    median_base, _ = per_row_key_offset(frame, 30, "2026-01-07", "departures", "median")
+    assert median_base[0] == 1.0
+    assert mean_base[0] > median_base[0]

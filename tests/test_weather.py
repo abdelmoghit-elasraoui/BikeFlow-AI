@@ -25,6 +25,9 @@ def synthetic_hours(start, hours, **overrides):
         "cloud_cover": 20.0,
         "snow_depth": 0.0,
         "visibility": 20000.0,
+        "wind_gusts_10m": 15.0,
+        "dew_point_2m": 7.0,
+        "snowfall": 0.0,
     }
     values.update(overrides)
     frame = pd.DataFrame({"weather_hour": index})
@@ -32,6 +35,8 @@ def synthetic_hours(start, hours, **overrides):
         frame[name] = np.float32(values[name])
     frame["is_precipitating"] = (frame["precipitation"].fillna(0) > 0).astype("int8")
     frame["is_cold"] = (frame["apparent_temperature"] < 5).astype("int8")
+    frame["rain_last_3h"] = np.float32(0.0)
+    frame["temp_anomaly_30d"] = np.float32(0.0)
     return frame
 
 

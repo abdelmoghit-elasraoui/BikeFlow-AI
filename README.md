@@ -191,6 +191,18 @@ no external call on the request path, and missing hours stay empty (LightGBM
 handles missing values). `metadata.json` records the weather source, variables,
 cache path and a digest of the weather frame.
 
+## Sprint 2: feature groups (`v4`)
+
+```sh
+# Groups: calendar, weather, holiday, station. Median offset, calibrated on validation.
+uv run bikeflow train --version v4 --targets data/processed/v2 --months 202510 202511 202512 202601 202602 202603 202604 202605 202606 202607 202608 202609 202610 --feature-groups calendar weather holiday station --weather-cache data/raw/weather_ext --offset median
+```
+
+The group list is stored in `metadata.json` and the API rebuilds the same matrix
+at serving, so a model can never be fed a different feature set than it was
+trained on. `--trees`, `--offset mean|median` and `--no-calibration` control the
+rest.
+
 ## Sprint 2: live-state features and the correction model
 
 ```sh

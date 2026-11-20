@@ -424,6 +424,28 @@ plus `is_precipitating` and `is_cold`.
 - `metadata.json` lists the feature columns and the weather source, variables,
   cache path and a digest of the weather frame.
 
+**Feature groups (`v4`).** `features.py` defines named groups and one `build()`
+used by training and serving:
+
+| Group | Columns | Source |
+| --- | --- | --- |
+| `calendar` | station code, weekday, hour, minute slot, weekend, day of year | target timestamps |
+| `weather` | 11 hourly variables plus 4 derived (rain in the last 3h, 30-day temperature anomaly, precipitating, cold) | Open-Meteo archived forecast |
+| `holiday` | federal holiday, day before, day after | computed locally |
+| `station` | latitude, longitude, stations within 500m | verified mapping |
+
+The group list and column order are stored in metadata, and serving rebuilds the
+same matrix from the live weather archive and the stored station context.
+
+Two calibration changes ship with `v4`:
+
+- **Median offset.** The per-key constant is the median instead of the mean,
+  because MAE is minimised by the conditional median. One lexsort over the
+  training rows, about 20 seconds per flow.
+- **Shrinkage.** A weight on the correction is fitted on validation; zero is the
+  offset table alone, one is the unmodified model. The reported test metrics
+  include the fitted weight, so calibration cannot flatter the comparison.
+
 ### 5.5 Results
 
 Measured on 1,396,464 test windows at 30 min and 698,232 at 60 min, per flow
@@ -464,6 +486,20 @@ Weather does almost nothing at 30 minutes, where the calendar already carries
 the signal, and turns 60 minutes from a loss into a win. On the busiest 50
 stations the 60-minute MAE falls from 5.81/5.86 to 5.39 against a 5.74/5.80
 baseline.
+
+`v4` adds holidays, station context, five more weather signals, the per-key
+median offset and validation shrinkage:
+
+| Horizon | Flow | `v3` | `v4` | Baseline | `v4` vs baseline |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 30 min | departures | 0.877 | 0.866 | 0.896 | +3.3% |
+| 30 min | arrivals | 0.876 | 0.865 | 0.897 | +3.6% |
+| 60 min | departures | 1.425 | 1.398 | 1.468 | +4.8% |
+| 60 min | arrivals | 1.433 | 1.402 | 1.476 | +5.0% |
+
+Shrinkage reached its 1.5 cap on all four models, so validation wanted more
+correction than the trees produced: the next step is capacity (the tree cap),
+not more features.
 
 Reading the numbers: MAE is the average absolute error in trips per station per
 window. Lower is better. The model beats the baseline on every horizon, every
