@@ -15,15 +15,18 @@ Leakage rules:
 
 import hashlib
 import json
-import time
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
+from .features import add_calendar
+from .features import build as features_build
+from .features import feature_columns as features_columns
 from .gbfs import utc_now
+from .progress import log
 from .session2 import train_key_means
 
 HORIZONS = (30, 60)
@@ -31,13 +34,6 @@ FLOWS = ("departures", "arrivals")
 VAL_DAYS = 14
 TEST_DAYS = 14
 PROGRESS_EVERY = 1_000_000
-_STARTED = time.monotonic()
-
-
-def log(message):
-    elapsed = time.monotonic() - _STARTED
-    now = datetime.now(timezone.utc).strftime("%H:%M:%S")
-    print(f"[{now} UTC +{elapsed:7.1f}s] {message}", flush=True)
 
 
 def load_targets(out_dir, horizon):
@@ -53,33 +49,14 @@ def load_targets(out_dir, horizon):
 
 
 def add_features(frame):
-    """Calendar features derived from UTC instants; no future information."""
-    log(f"Features: computing calendar columns for {len(frame):,} rows")
-    ts = pd.DatetimeIndex(frame.window_start_utc)
-    local = ts.tz_convert("America/New_York")
-    frame["weekday"] = local.weekday.astype("int8")
-    frame["hour"] = local.hour.astype("int8")
-    frame["minute_slot"] = (local.hour * 60 + local.minute).astype("int16")
-    frame["is_weekend"] = (local.weekday >= 5).astype("int8")
-    frame["day_of_year"] = local.dayofyear.astype("int16")
-    return frame
+    """Calendar columns; kept as a wrapper so older callers keep working."""
+    return add_calendar(frame)
 
 
 def feature_columns(include_weather=False):
-    columns = [
-        "station_code",
-        "weekday",
-        "hour",
-        "minute_slot",
-        "is_weekend",
-        "day_of_year",
-    ]
-    if include_weather:
-        # Imported here: weather.py imports log() from this module.
-        from .weather import WEATHER_FEATURES
-
-        columns.extend(WEATHER_FEATURES)
-    return columns
+    """Column list for the original calendar-only models and the weather build."""
+    groups = ["calendar", "weather"] if include_weather else ["calendar"]
+    return features_columns(groups)
 
 
 def encode_stations(train, others):
@@ -212,6 +189,8 @@ def run_training(
     months=("202512", "202601", "202602"),
     weather=False,
     weather_cache=Path("data/raw/weather"),
+    feature_groups=None,
+    trees=600,
 ):
     """Train 4 models, compare against baseline v0, write artifacts + metrics."""
     out_dir, models_dir = Path(out_dir), Path(models_dir)
@@ -230,13 +209,17 @@ def run_training(
         log(f"Mapping: {len(live_to_trip):,} live GBFS ids bridged to trip ids")
     else:
         log(f"Mapping: {mapping_path} missing; live ids will fall back to unknown codes")
+    if feature_groups is None:
+        feature_groups = ["calendar", "weather"] if weather else ["calendar"]
+    feature_groups = tuple(feature_groups)
     log(
         f"Training run starting: version {version}, months {months}, "
-        f"weather {'on' if weather else 'off'}"
+        f"groups {list(feature_groups)}, trees {trees}"
     )
     weather_digest = None
+    station_context_meta = None
     params = {
-        "n_estimators": 600,
+        "n_estimators": trees,
         "learning_rate": 0.05,
         "num_leaves": 31,
         "min_child_samples": 40,
@@ -258,21 +241,6 @@ def run_training(
     unknown_code = 0
     for horizon in HORIZONS:
         frame = load_targets(out_dir, horizon)
-        frame = add_features(frame)
-        if weather:
-            from .weather import add_weather_features
-            from .weather import load as load_weather
-
-            start = str(frame.window_start_utc.min().date())
-            end = str((frame.window_start_utc.max() + pd.Timedelta(days=1)).date())
-            weather_frame = load_weather(start, end, weather_cache)
-            if weather_digest is None:
-                weather_digest = hashlib.sha256(
-                    pd.util.hash_pandas_object(weather_frame, index=False).values.tobytes()
-                ).hexdigest()
-            frame = add_weather_features(frame, weather_frame)
-            del weather_frame
-        features = feature_columns(weather)
         log(f"Model {horizon}min: dataset hash update")
         # Per column: hashing the 4-column frame at once built a ~1GB copy of
         # the 13-month table just to fingerprint it.
@@ -299,6 +267,38 @@ def run_training(
         log(
             f"Model {horizon}min: {len(mapping):,} station codes, {len(bridged):,} live ids bridged"
         )
+        weather_frame = None
+        if "weather" in feature_groups:
+            from .weather import load as load_weather
+
+            start = str(frame.window_start_utc.min().date())
+            end = str((frame.window_start_utc.max() + pd.Timedelta(days=1)).date())
+            weather_frame = load_weather(start, end, weather_cache)
+            if weather_digest is None:
+                weather_digest = hashlib.sha256(
+                    pd.util.hash_pandas_object(weather_frame, index=False).values.tobytes()
+                ).hexdigest()
+        context = None
+        if "station" in feature_groups:
+            from .features import station_context
+
+            context = station_context(mapping_path)
+            context["station_code"] = context.station_id.map(mapping)
+            context = context.dropna(subset=["station_code"])
+            context["station_code"] = context.station_code.astype("int32")
+            if station_context_meta is None:
+                station_context_meta = {
+                    str(int(row.station_code)): [
+                        round(float(row.latitude), 5),
+                        round(float(row.longitude), 5),
+                        int(row.neighbours_500m),
+                    ]
+                    for row in context.itertuples()
+                }
+        frame = features_build(frame, feature_groups, weather=weather_frame, context=context)
+        feature_names = features_columns(feature_groups)
+        del weather_frame
+        log(f"Model {horizon}min: {len(feature_names)} features")
         horizon_metrics = {"val_start": val_start, "test_start": test_start, "flows": {}}
         for flow in FLOWS:
             log(f"Model {horizon}min {flow}: training")
@@ -308,12 +308,12 @@ def run_training(
             base, key_means = per_row_key_mean(frame, horizon, val_start, flow)
             np.save(version_dir / f"{horizon}min_{flow}_base.npy", key_means)
             booster, test = train_one(
-                horizon, flow, frame, val_start, test_start, params, base, features
+                horizon, flow, frame, val_start, test_start, params, base, feature_names
             )
             del base, key_means
             model_path = version_dir / f"{horizon}min_{flow}.txt"
             booster.booster_.save_model(str(model_path))
-            model_pred = booster.predict(test[features]) + test.base.to_numpy()
+            model_pred = booster.predict(test[feature_names]) + test.base.to_numpy()
             base_pred = pd.Series(
                 [
                     baselines[flow].get((str(s), int(wd), int(slot)), 0.0)
@@ -364,11 +364,13 @@ def run_training(
         "dataset_hash": dataset_hash.hexdigest(),
         "months": list(months),
         "targets_dir": str(out_dir),
-        "feature_columns": features,
+        "feature_columns": feature_names,
+        "feature_groups": list(feature_groups),
+        "station_context": station_context_meta,
         "weather": (
             {
                 "source": "open-meteo historical forecast",
-                "variables": features[len(feature_columns()) :],
+                "variables": feature_names[len(features_columns(["calendar"])) :],
                 "cache": str(weather_cache),
                 "digest": weather_digest,
             }

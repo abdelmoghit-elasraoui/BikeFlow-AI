@@ -23,7 +23,7 @@ from urllib.request import Request, urlopen
 import numpy as np
 import pandas as pd
 
-from .model import log
+from .progress import log
 
 FORECAST_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
 LIVE_URL = "https://api.open-meteo.com/v1/forecast"

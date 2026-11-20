@@ -21,10 +21,11 @@ import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 
+from .features import build as build_feature_groups
 from .gbfs import utc_now
 from .live import CORRECTION_FEATURES, serving_features
 from .model import feature_columns
-from .weather import add_weather_features, load_live
+from .weather import load_live
 
 _state_lock = threading.Lock()
 LOW_WATER = 3.0
@@ -110,17 +111,6 @@ def load_models(models_dir):
     return models
 
 
-def build_features(frame, horizon):
-    ts = pd.DatetimeIndex(frame.window_start_utc)
-    local = ts.tz_convert("America/New_York")
-    frame["weekday"] = local.weekday.astype("int8")
-    frame["hour"] = local.hour.astype("int8")
-    frame["minute_slot"] = (local.hour * 60 + local.minute).astype("int16")
-    frame["is_weekend"] = (local.weekday >= 5).astype("int8")
-    frame["day_of_year"] = local.dayofyear.astype("int16")
-    return frame
-
-
 def create_app(models_dir, data_dir):
     models_dir = Path(models_dir)
     data_dir = Path(data_dir)
@@ -129,6 +119,16 @@ def create_app(models_dir, data_dir):
     metadata = json.loads((models_dir / "metadata.json").read_text())
     station_codes = metadata.get("station_codes", {})
     model_features = metadata.get("feature_columns") or feature_columns()
+    feature_groups = metadata.get("feature_groups") or (
+        ["calendar", "weather"] if metadata.get("weather") else ["calendar"]
+    )
+    station_context = metadata.get("station_context")
+    context_frame = None
+    if station_context:
+        context_frame = pd.DataFrame(
+            [(int(code), *values) for code, values in station_context.items()],
+            columns=["station_code", "latitude", "longitude", "neighbours_500m"],
+        )
     # The unknown code is the first index past the trained categories, not the
     # size of the served mapping: station_codes also carries live-id bridges.
     unknown_code = metadata.get("unknown_station_code", max(station_codes.values(), default=-1) + 1)
@@ -178,13 +178,12 @@ def create_app(models_dir, data_dir):
             }
         )
         frame["station_code"] = [station_codes.get(s, unknown_code) for s in station_ids]
-        frame = build_features(frame, horizon)
-        if metadata.get("weather"):
+        weather = None
+        if "weather" in feature_groups:
             # The archived forecast, read at request time: no external call on
             # the serving path. Missing hours stay NaN and LightGBM handles it.
             weather = load_live(data_dir / "weather")
-            if weather is not None:
-                frame = add_weather_features(frame, weather)
+        frame = build_feature_groups(frame, feature_groups, weather=weather, context=context_frame)
         predictions = {}
         for flow in ("departures", "arrivals"):
             raw = models[(horizon, flow)].predict(frame[model_features])

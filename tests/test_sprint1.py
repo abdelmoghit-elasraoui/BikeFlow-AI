@@ -232,3 +232,31 @@ def test_api_serves_a_model_with_weather_features(tiny_dataset, tiny_weather, tm
     response = client.get("/forecasts/a?horizon=30")
     assert response.status_code == 200, response.text
     assert response.json()["forecast_departures"] >= 0
+
+
+def test_training_with_holiday_and_station_groups(tiny_dataset, tmp_path):
+    mapping = tmp_path / "mapping.csv"
+    pd.DataFrame(
+        {
+            "trip_station_id": ["a", "b"],
+            "trip_name": ["A", "B"],
+            "trip_lat_mean": [40.0, 40.02],
+            "trip_lon_mean": [-73.0, -73.0],
+            "gbfs_station_id": ["la", "lb"],
+            "mapping_status": ["matched", "matched"],
+        }
+    ).to_csv(mapping, index=False)
+    result = run_training(
+        tiny_dataset,
+        tmp_path / "models",
+        "vg",
+        months=("tiny",),
+        mapping_path=mapping,
+        feature_groups=["calendar", "holiday", "station"],
+    )
+    metadata = result["metadata"]
+    assert metadata["feature_groups"] == ["calendar", "holiday", "station"]
+    assert "is_holiday" in metadata["feature_columns"]
+    assert "latitude" in metadata["feature_columns"]
+    assert metadata["station_context"]
+    assert metadata["weather"] is None

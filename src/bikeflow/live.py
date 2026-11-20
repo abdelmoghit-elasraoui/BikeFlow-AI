@@ -27,7 +27,8 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from .model import add_features, feature_columns, log
+from .model import add_features, feature_columns
+from .progress import log
 
 POLL_NAME = re.compile(r"^(\d{8}T\d{12})Z-")
 LIVE_FEATURES = [
